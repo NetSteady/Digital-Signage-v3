@@ -21,18 +21,38 @@ const MAX_RETRIES = 5;
 const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000;
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
 
+interface Asset {
+  filepath: string;
+  filetype: string;
+  time: number;
+  name: string | null;
+}
+
+interface ApiResponse {
+  functions?: {
+    is_restarting?: boolean;
+  };
+  playlists?: Array<{
+    is_default?: boolean;
+    assets: Array<{
+      filepath: string;
+      filetype: string;
+      time: string;
+      name?: string;
+      playing_order?: string;
+    }>;
+  }>;
+}
+
 export default function SignageApp() {
   // State
   const [currentAssetIndex, setCurrentAssetIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deviceName, setDeviceName] = useState("");
-  const [assets, setAssets] = useState<any[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
   const [networkStatus, setNetworkStatus] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
-  const [cachedAssets, setCachedAssets] = useState<Map<string, string>>(
-    new Map()
-  );
 
   // Refs
   const webViewRef = useRef<WebView>(null);
@@ -58,12 +78,12 @@ export default function SignageApp() {
   }, []);
 
   // Get user-configurable device name from Android settings
-  const getDeviceName = useCallback(async () => {
+  const getDeviceName = useCallback(async (): Promise<string> => {
     try {
       let savedDeviceName = await AsyncStorage.getItem("deviceName");
 
       if (!savedDeviceName) {
-        let actualDeviceName = null;
+        let actualDeviceName: string | null = null;
 
         try {
           const { AndroidSettingsModule } = NativeModules;
@@ -99,12 +119,12 @@ export default function SignageApp() {
           .replace(/_{2,}/g, "_")
           .toLowerCase();
 
-        await AsyncStorage.setItem("deviceName", savedDeviceName ?? "");
+        await AsyncStorage.setItem("deviceName", savedDeviceName);
         console.log("Device name saved:", savedDeviceName);
       }
 
-      setDeviceName(savedDeviceName ?? "");
-      return savedDeviceName ?? "";
+      setDeviceName(savedDeviceName);
+      return savedDeviceName;
     } catch (error) {
       console.error("Error getting device name:", error);
       throw error; // Don't continue without proper device name
@@ -290,7 +310,7 @@ export default function SignageApp() {
           throw new Error(`API Error: ${response.status}`);
         }
 
-        const data = await response.json();
+        const data: ApiResponse = await response.json();
 
         const responseString = JSON.stringify(data);
         const hasChanged = lastApiResponseRef.current !== responseString;
@@ -312,18 +332,18 @@ export default function SignageApp() {
         }
 
         const playlist =
-          data.playlists.find((p: any) => p.is_default) || data.playlists[0];
+          data.playlists.find((p) => p.is_default) || data.playlists[0];
 
-        const essentialAssets = playlist.assets
+        const essentialAssets: Asset[] = playlist.assets
           .filter(
-            (asset: any) =>
-              asset.filepath && asset.time && parseInt(asset.time) > 0
+            (asset) => asset.filepath && asset.time && parseInt(asset.time) > 0
           )
           .sort(
-            (a: any, b: any) =>
-              parseInt(a.playing_order || 0) - parseInt(b.playing_order || 0)
+            (a, b) =>
+              parseInt(a.playing_order || "0") -
+              parseInt(b.playing_order || "0")
           )
-          .map((asset: any) => ({
+          .map((asset) => ({
             filepath: asset.filepath,
             filetype: asset.filetype.toLowerCase(),
             time: parseInt(asset.time),
@@ -343,7 +363,7 @@ export default function SignageApp() {
         throw error;
       }
     },
-    [networkStatus]
+    [networkStatus, initCacheDirectory]
   );
 
   // Timer cleanup
@@ -403,7 +423,7 @@ export default function SignageApp() {
 
   // Pre-cache assets
   const preCacheAssets = useCallback(
-    async (assets: any[]) => {
+    async (assets: Asset[]) => {
       if (!networkStatus) return;
 
       console.log("Starting background asset pre-caching...");
@@ -433,7 +453,7 @@ export default function SignageApp() {
       console.log("Initializing app...");
 
       const deviceName = await getDeviceName();
-      const result = await fetchPlaylist(deviceName ?? "");
+      const result = await fetchPlaylist(deviceName);
 
       if (result.hasChanged || assets.length === 0) {
         setAssets(result.assets);
@@ -476,7 +496,7 @@ export default function SignageApp() {
       if (!networkStatus || isLoading) return;
 
       try {
-        const periodicResult = await fetchPlaylist(deviceName ?? "");
+        const periodicResult = await fetchPlaylist(deviceName);
 
         if (
           periodicResult.hasChanged &&
@@ -551,24 +571,14 @@ export default function SignageApp() {
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
 
-  const currentAsset = assets[currentAssetIndex];
-  const [localPath, setLocalPath] = useState<string>(
-    currentAsset?.filepath ?? ""
-  );
+  // Asset rendering component
+  const AssetRenderer: React.FC<{ asset: Asset }> = ({ asset }) => {
+    const { filepath, filetype } = asset;
+    const [localPath, setLocalPath] = useState<string>(filepath);
 
-  useEffect(() => {
-    if (currentAsset) {
-      setLocalPath(currentAsset.filepath);
-      getAssetPath(currentAsset.filepath, currentAsset.filetype).then(
-        setLocalPath
-      );
-    }
-  }, [currentAsset]);
-
-  // Asset rendering with caching
-  const renderCurrentAsset = () => {
-    if (!currentAsset) return null;
-    const { filetype, filepath } = currentAsset;
+    useEffect(() => {
+      getAssetPath(filepath, filetype).then(setLocalPath);
+    }, [filepath, filetype]);
 
     if (filetype === "html" || filetype === "url") {
       const isLocal = localPath.startsWith("file://");
@@ -701,6 +711,7 @@ export default function SignageApp() {
     );
   }
 
+  const currentAsset = assets[currentAssetIndex];
   if (!currentAsset) {
     return (
       <View style={styles.container}>
@@ -715,7 +726,7 @@ export default function SignageApp() {
   return (
     <View style={styles.container}>
       <StatusBar hidden />
-      {renderCurrentAsset()}
+      <AssetRenderer asset={currentAsset} />
     </View>
   );
 }
