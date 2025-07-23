@@ -551,14 +551,24 @@ export default function SignageApp() {
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
 
+  const currentAsset = assets[currentAssetIndex];
+  const [localPath, setLocalPath] = useState<string>(
+    currentAsset?.filepath ?? ""
+  );
+
+  useEffect(() => {
+    if (currentAsset) {
+      setLocalPath(currentAsset.filepath);
+      getAssetPath(currentAsset.filepath, currentAsset.filetype).then(
+        setLocalPath
+      );
+    }
+  }, [currentAsset]);
+
   // Asset rendering with caching
   const renderCurrentAsset = () => {
-    const { filepath, filetype } = currentAsset;
-    const [localPath, setLocalPath] = useState<string>(filepath);
-
-    useEffect(() => {
-      getAssetPath(filepath, filetype).then(setLocalPath);
-    }, [filepath, filetype]);
+    if (!currentAsset) return null;
+    const { filetype, filepath } = currentAsset;
 
     if (filetype === "html" || filetype === "url") {
       const isLocal = localPath.startsWith("file://");
@@ -691,7 +701,6 @@ export default function SignageApp() {
     );
   }
 
-  const currentAsset = assets[currentAssetIndex];
   if (!currentAsset) {
     return (
       <View style={styles.container}>
