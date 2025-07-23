@@ -1,4 +1,4 @@
-package com.ghutch55.DigitalSignage_v3;
+package com.ghutch55.DigitalSignagev3;
 
 import android.content.Context;
 import android.provider.Settings;
