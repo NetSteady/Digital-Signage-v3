@@ -76,6 +76,7 @@ export default function SignageApp() {
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
+  const skipAssetRef = useRef<boolean>(false); // Flag to prevent double skipping
 
   useKeepAwake(); //keeping the app awake
 
@@ -497,6 +498,33 @@ export default function SignageApp() {
     }, 1000);
   }, []);
 
+  // Skip to next asset (centralized function)
+  const skipToNextAsset = useCallback(() => {
+    if (skipAssetRef.current) {
+      console.log("⏭️ Skip already in progress, ignoring");
+      return;
+    }
+
+    skipAssetRef.current = true;
+    console.log("⏭️ Skipping to next asset");
+
+    // Clear all timers
+    clearAllTimers();
+
+    // Calculate next index
+    const nextIndex = (currentAssetIndex + 1) % assets.length;
+    console.log(`➡️ Moving to asset ${nextIndex + 1}/${assets.length}`);
+
+    // Update state and start next asset
+    setCurrentAssetIndex(nextIndex);
+
+    // Small delay to ensure state updates, then reset skip flag and play
+    setTimeout(() => {
+      skipAssetRef.current = false;
+      playAsset(nextIndex);
+    }, 100);
+  }, [currentAssetIndex, assets.length, clearAllTimers]);
+
   // Asset playback
   const playAsset = useCallback(
     (assetIndex: number) => {
@@ -515,7 +543,11 @@ export default function SignageApp() {
       );
       console.log(`📋 Asset details:`, JSON.stringify(asset, null, 2));
 
+      // Clear existing timers
       clearAllTimers();
+
+      // Reset skip flag
+      skipAssetRef.current = false;
 
       // Start countdown for debugging
       startCountdown(asset.time);
@@ -529,19 +561,13 @@ export default function SignageApp() {
           `⏱️ Timer fired after ${actualDuration}ms (expected ${duration}ms)`
         );
 
-        const nextIndex = (assetIndex + 1) % assets.length;
-        console.log(`➡️ Moving to next asset: ${nextIndex}`);
-        setCurrentAssetIndex(nextIndex);
-
-        // Add a small delay to ensure state updates
-        setTimeout(() => {
-          playAsset(nextIndex);
-        }, 50);
+        // Skip to next asset
+        skipToNextAsset();
       }, duration);
 
       console.log(`✅ Playback timer set with ID:`, playbackTimer.current);
     },
-    [assets, clearAllTimers, startCountdown]
+    [assets, clearAllTimers, startCountdown, skipToNextAsset]
   );
 
   // Retry logic with exponential backoff
@@ -758,78 +784,45 @@ export default function SignageApp() {
     const handleError = useCallback(
       (errorMessage?: string) => {
         console.error(`❌ Asset load error: ${filepath}`, errorMessage);
-        setLoadError(true);
 
         if (errorMessage) {
           setConnectionError(errorMessage);
         }
 
-        if (!loadError) {
-          // Try fallback to original URL if cached version failed
-          if (localPath !== filepath) {
-            console.log("🔄 Trying original URL as fallback");
-            setLocalPath(filepath);
-          } else {
-            // Skip to next asset if all attempts failed
-            console.log("⏭️ Skipping to next asset due to load failure");
-
-            // Clear the current timer before skipping
-            if (playbackTimer.current) {
-              console.log("🛑 Clearing timer due to asset error");
-              clearTimeout(playbackTimer.current);
-              playbackTimer.current = null;
-            }
-
-            setTimeout(() => {
-              const nextIndex = (currentAssetIndex + 1) % assets.length;
-              setCurrentAssetIndex(nextIndex);
-              playAsset(nextIndex);
-            }, 1000);
-          }
+        // Try fallback to original URL if cached version failed
+        if (!loadError && localPath !== filepath) {
+          console.log("🔄 Trying original URL as fallback");
+          setLoadError(true);
+          setLocalPath(filepath);
+          return;
         }
+
+        // If all attempts failed, skip to next asset
+        console.log("⏭️ All attempts failed, skipping to next asset");
+        setTimeout(() => {
+          skipToNextAsset();
+        }, 1000);
       },
-      [
-        filepath,
-        localPath,
-        loadError,
-        currentAssetIndex,
-        assets.length,
-        playAsset,
-      ]
+      [filepath, localPath, loadError, skipToNextAsset]
     );
 
     const handleImageError = useCallback(() => {
       console.error(`🖼️ Image load error: ${filepath}`);
-      setImageError(true);
 
+      // Try fallback to original URL if cached version failed
       if (!imageError && localPath !== filepath) {
         console.log("🔄 Trying original URL as fallback for image");
+        setImageError(true);
         setLocalPath(filepath);
-      } else {
-        // Skip to next asset if all attempts failed
-        console.log("⏭️ Skipping to next asset due to image load failure");
-
-        // Clear the current timer before skipping
-        if (playbackTimer.current) {
-          console.log("🛑 Clearing timer due to image error");
-          clearTimeout(playbackTimer.current);
-          playbackTimer.current = null;
-        }
-
-        setTimeout(() => {
-          const nextIndex = (currentAssetIndex + 1) % assets.length;
-          setCurrentAssetIndex(nextIndex);
-          playAsset(nextIndex);
-        }, 1000);
+        return;
       }
-    }, [
-      filepath,
-      localPath,
-      imageError,
-      currentAssetIndex,
-      assets.length,
-      playAsset,
-    ]);
+
+      // If all attempts failed, skip to next asset
+      console.log("⏭️ Image load failed, skipping to next asset");
+      setTimeout(() => {
+        skipToNextAsset();
+      }, 1000);
+    }, [filepath, localPath, imageError, skipToNextAsset]);
 
     // For HTML/URL content, use WebView with better error handling and HTTP support
     if (filetype === "html" || filetype === "url" || filetype === "stream") {
@@ -853,18 +846,15 @@ export default function SignageApp() {
             source={{ uri: localPath }}
             style={styles.webview}
             javaScriptEnabled={true}
-            domStorageEnabled={true} // Enable for streaming platforms
+            domStorageEnabled={true}
             mediaPlaybackRequiresUserAction={false}
             allowsInlineMediaPlayback={true}
-            cacheEnabled={isLocal && !isLivestream} // Don't cache livestreams
-            incognito={!isLocal || isLivestream} // Always incognito for livestreams
+            cacheEnabled={isLocal && !isLivestream}
+            incognito={!isLocal || isLivestream}
             androidLayerType="hardware"
-            // Allow mixed content and HTTP for better compatibility
             mixedContentMode="always"
             allowsBackForwardNavigationGestures={false}
-            // Add originWhitelist to allow HTTP content
             originWhitelist={["*"]}
-            // Additional settings for livestreams and streaming platforms
             startInLoadingState={true}
             renderLoading={() => (
               <View style={styles.webviewLoading}>
@@ -873,12 +863,9 @@ export default function SignageApp() {
                 </Text>
               </View>
             )}
-            // User agent for better compatibility with streaming platforms
             userAgent="Mozilla/5.0 (Linux; Android 10; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36 SmartTV"
-            // Additional security settings for HTTP content
             onShouldStartLoadWithRequest={(request) => {
               console.log("📡 Loading request:", request.url);
-              // Allow navigation within streaming platforms
               return true;
             }}
             onError={(syntheticEvent) => {
@@ -940,10 +927,8 @@ export default function SignageApp() {
                 );
               }
             }}
-            // Handle navigation for streaming platforms
             onNavigationStateChange={(navState) => {
               console.log("🧭 Navigation:", navState.url);
-              // You can add logic here to handle redirects if needed
             }}
           />
 
@@ -1089,9 +1074,7 @@ export default function SignageApp() {
             </style>
             ${
               isLivestream
-                ? `
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.10/hls.min.js"></script>
-            `
+                ? `<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.10/hls.min.js"></script>`
                 : ""
             }
           </head>
@@ -1101,7 +1084,9 @@ export default function SignageApp() {
             }...</div>
             <video id="video" style="display:none;" ${
               isLivestream ? "" : "controls"
-            } autoplay muted ${isLivestream ? "playsinline" : "loop"}>
+            } autoplay muted ${
+        isLivestream ? "playsinline" : "loop"
+      } preload="auto">
               ${
                 !isLivestream
                   ? `<source src="${localPath}" type="video/mp4">`
@@ -1112,34 +1097,60 @@ export default function SignageApp() {
             <script>
               const video = document.getElementById('video');
               const loading = document.getElementById('loading');
+              let loadTimeout;
               
               function showError(message) {
                 loading.innerHTML = '<div class="error">Error: ' + message + '</div>';
                 console.error('Video error:', message);
+                // Notify parent about error after 3 seconds
+                setTimeout(() => {
+                  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'error',
+                    message: message
+                  }));
+                }, 3000);
               }
               
               function hideLoading() {
+                if (loadTimeout) clearTimeout(loadTimeout);
                 loading.style.display = 'none';
                 video.style.display = 'block';
+                console.log('Video ready to play');
+                // Notify parent that video is ready
+                window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
+                  type: 'ready'
+                }));
               }
+              
+              // Set a timeout for loading
+              loadTimeout = setTimeout(() => {
+                if (loading.style.display !== 'none') {
+                  showError('Loading timeout - video may be unavailable');
+                }
+              }, 15000); // 15 second timeout
               
               ${
                 isLivestream
                   ? `
               // HLS/M3U8 Livestream support
-              if (Hls.isSupported()) {
+              if (typeof Hls !== 'undefined' && Hls.isSupported()) {
                 const hls = new Hls({
                   enableWorker: true,
-                  lowLatencyMode: true,
-                  backBufferLength: 90,
-                  maxBufferLength: 30,
-                  maxMaxBufferLength: 60,
-                  maxBufferSize: 60 * 1000 * 1000,
+                  lowLatencyMode: false,
+                  backBufferLength: 30,
+                  maxBufferLength: 15,
+                  maxMaxBufferLength: 30,
+                  maxBufferSize: 30 * 1000 * 1000,
                   maxBufferHole: 0.5,
                   startLevel: -1,
                   autoStartLoad: true,
                   startFragPrefetch: true,
-                  testBandwidth: false
+                  testBandwidth: false,
+                  debug: false,
+                  // Reduced jitter settings
+                  liveSyncDurationCount: 3,
+                  liveMaxLatencyDurationCount: 10,
+                  liveDurationInfinity: true
                 });
                 
                 hls.loadSource('${localPath}');
@@ -1148,68 +1159,131 @@ export default function SignageApp() {
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
                   console.log('HLS manifest parsed, starting playback');
                   hideLoading();
-                  video.play().catch(e => showError('Playback failed: ' + e.message));
+                  video.play().catch(e => {
+                    console.error('Playback start failed:', e);
+                    showError('Playback failed: ' + e.message);
+                  });
                 });
                 
                 hls.on(Hls.Events.ERROR, (event, data) => {
-                  console.error('HLS error:', data);
+                  console.error('HLS error:', data.type, data.details, data.fatal);
                   if (data.fatal) {
                     switch(data.type) {
                       case Hls.ErrorTypes.NETWORK_ERROR:
-                        showError('Network error - check connection');
-                        setTimeout(() => hls.startLoad(), 5000);
+                        console.log('Network error, attempting recovery...');
+                        hls.startLoad();
                         break;
                       case Hls.ErrorTypes.MEDIA_ERROR:
-                        showError('Media error - trying to recover');
+                        console.log('Media error, attempting recovery...');
                         hls.recoverMediaError();
                         break;
                       default:
-                        showError('Fatal error occurred');
+                        showError('Fatal streaming error: ' + data.details);
                         break;
                     }
                   }
                 });
                 
-                video.addEventListener('loadstart', () => console.log('Video loading started'));
-                video.addEventListener('canplay', () => {
-                  console.log('Video can start playing');
-                  hideLoading();
+                // Buffer monitoring for smooth playback
+                hls.on(Hls.Events.BUFFER_APPENDED, () => {
+                  // Keep buffer healthy
+                  if (video.buffered.length > 0) {
+                    const bufferEnd = video.buffered.end(video.buffered.length - 1);
+                    const currentTime = video.currentTime;
+                    if (bufferEnd - currentTime > 30) {
+                      // Too much buffer, might cause memory issues
+                      console.log('Large buffer detected, may cause jitter');
+                    }
+                  }
                 });
                 
               } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 // Native HLS support (Safari, some Android browsers)
                 video.src = '${localPath}';
-                video.addEventListener('loadstart', () => console.log('Native HLS loading'));
+                video.addEventListener('loadstart', () => {
+                  console.log('Native HLS loading started');
+                });
                 video.addEventListener('canplay', () => {
                   hideLoading();
                   video.play().catch(e => showError('Playback failed: ' + e.message));
                 });
+                video.addEventListener('error', (e) => {
+                  showError('Native HLS error: ' + e.message);
+                });
               } else {
-                showError('HLS not supported on this device');
+                showError('HLS streaming not supported on this device');
               }
               `
                   : `
               // Regular MP4 video
-              video.addEventListener('loadstart', () => console.log('Video loading started'));
+              video.addEventListener('loadstart', () => {
+                console.log('MP4 video loading started');
+              });
+              
+              video.addEventListener('loadedmetadata', () => {
+                console.log('Video metadata loaded');
+              });
+              
               video.addEventListener('canplay', () => {
                 console.log('Video can start playing');
                 hideLoading();
               });
-              video.addEventListener('error', (e) => {
-                console.error('Video error:', e);
-                showError('Video load failed');
+              
+              video.addEventListener('canplaythrough', () => {
+                console.log('Video can play through without buffering');
               });
               
-              // Start loading
+              video.addEventListener('error', (e) => {
+                let errorMsg = 'Video load failed';
+                if (video.error) {
+                  switch(video.error.code) {
+                    case video.error.MEDIA_ERR_ABORTED:
+                      errorMsg = 'Video load aborted';
+                      break;
+                    case video.error.MEDIA_ERR_NETWORK:
+                      errorMsg = 'Network error loading video';
+                      break;
+                    case video.error.MEDIA_ERR_DECODE:
+                      errorMsg = 'Video decode error';
+                      break;
+                    case video.error.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                      errorMsg = 'Video format not supported';
+                      break;
+                  }
+                }
+                console.error('Video error:', errorMsg, video.error);
+                showError(errorMsg);
+              });
+              
+              // Start loading the video
               video.load();
               `
               }
               
-              // Common event handlers
-              video.addEventListener('waiting', () => console.log('Video buffering...'));
-              video.addEventListener('playing', () => console.log('Video playing'));
-              video.addEventListener('pause', () => console.log('Video paused'));
-              video.addEventListener('ended', () => console.log('Video ended'));
+              // Common event handlers for both live and regular video
+              video.addEventListener('waiting', () => {
+                console.log('Video buffering...');
+              });
+              
+              video.addEventListener('playing', () => {
+                console.log('Video playing smoothly');
+              });
+              
+              video.addEventListener('pause', () => {
+                console.log('Video paused');
+              });
+              
+              video.addEventListener('ended', () => {
+                console.log('Video playback ended');
+              });
+              
+              video.addEventListener('stalled', () => {
+                console.log('Video stalled - network may be slow');
+              });
+              
+              video.addEventListener('suspend', () => {
+                console.log('Video loading suspended');
+              });
               
             </script>
           </body>
@@ -1229,19 +1303,14 @@ export default function SignageApp() {
             originWhitelist={["*"]}
             allowsInlineMediaPlayback={true}
             mediaPlaybackRequiresUserAction={false}
-            startInLoadingState={true}
-            renderLoading={() => (
-              <View style={styles.webviewLoading}>
-                <Text style={styles.loadingText}>
-                  {isLivestream
-                    ? "Connecting to livestream..."
-                    : "Loading video..."}
-                </Text>
-              </View>
-            )}
+            startInLoadingState={false}
             onError={(error) => {
               console.error("📹 Video WebView error:", error.nativeEvent);
-              handleError(error.nativeEvent.description);
+              handleError(`WebView error: ${error.nativeEvent.description}`);
+            }}
+            onHttpError={(error) => {
+              console.error("📹 Video HTTP error:", error.nativeEvent);
+              handleError(`HTTP error: ${error.nativeEvent.statusCode}`);
             }}
             onLoadStart={() =>
               console.log(
@@ -1250,10 +1319,20 @@ export default function SignageApp() {
                 localPath
               )
             }
-            onLoadEnd={() => console.log("✅ Video load completed")}
+            onLoadEnd={() => console.log("✅ Video WebView load completed")}
             onMessage={(event) => {
-              // Handle messages from the video player if needed
-              console.log("📹 Video message:", event.nativeEvent.data);
+              try {
+                const message = JSON.parse(event.nativeEvent.data);
+                console.log("📹 Video message:", message);
+
+                if (message.type === "error") {
+                  handleError(message.message);
+                } else if (message.type === "ready") {
+                  console.log("📹 Video is ready to play");
+                }
+              } catch (e) {
+                console.log("📹 Video message (raw):", event.nativeEvent.data);
+              }
             }}
           />
 
@@ -1271,6 +1350,9 @@ export default function SignageApp() {
               </Text>
               <Text style={styles.debugText}>
                 Format: {filetype.toUpperCase()}
+              </Text>
+              <Text style={styles.debugText}>
+                Source: {isLocal ? "Local" : "Remote"}
               </Text>
             </View>
           )}
