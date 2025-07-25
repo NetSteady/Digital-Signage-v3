@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext traffic for signage content -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Add your specific domains here if you want to be more restrictive -->
+        <domain includeSubdomains="true">applicationbank.com</domain>
+        <!-- Allow all domains for maximum compatibility (less secure) -->
+        <!-- Uncomment the line below if you need to support HTTP from any domain -->
+        <!-- <domain includeSubdomains="true">*</domain> -->
+    </domain-config>
+    
+    <!-- Base configuration - allow cleartext traffic globally -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

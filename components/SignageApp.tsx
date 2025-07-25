@@ -8,6 +8,8 @@ import {
   AppState,
   AppStateStatus,
   BackHandler,
+  Dimensions,
+  Image,
   NativeModules,
   StyleSheet,
   Text,
@@ -21,6 +23,9 @@ const RETRY_DELAY = 60 * 1000; // 1 minute
 const MAX_RETRIES = 5;
 const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
+
+// Get screen dimensions
+const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
 
 interface Asset {
   filepath: string;
@@ -644,9 +649,11 @@ export default function SignageApp() {
     const { filepath, filetype } = asset;
     const [localPath, setLocalPath] = useState<string>(filepath);
     const [loadError, setLoadError] = useState(false);
+    const [imageError, setImageError] = useState(false);
 
     useEffect(() => {
       setLoadError(false);
+      setImageError(false);
       getAssetPath(filepath, filetype).then(setLocalPath);
     }, [filepath, filetype]);
 
@@ -670,6 +677,24 @@ export default function SignageApp() {
       }
     }, [filepath, localPath, loadError, currentAssetIndex, assets.length]);
 
+    const handleImageError = useCallback(() => {
+      console.error(`Image load error: ${filepath}`);
+      setImageError(true);
+
+      if (!imageError && localPath !== filepath) {
+        console.log("Trying original URL as fallback for image");
+        setLocalPath(filepath);
+      } else {
+        // Skip to next asset if all attempts failed
+        console.log("Skipping to next asset due to image load failure");
+        setTimeout(() => {
+          const nextIndex = (currentAssetIndex + 1) % assets.length;
+          setCurrentAssetIndex(nextIndex);
+        }, 1000);
+      }
+    }, [filepath, localPath, imageError, currentAssetIndex, assets.length]);
+
+    // For HTML/URL content, use WebView with better error handling and HTTP support
     if (filetype === "html" || filetype === "url") {
       const isLocal = localPath.startsWith("file://");
 
@@ -685,9 +710,20 @@ export default function SignageApp() {
           cacheEnabled={isLocal}
           incognito={!isLocal}
           androidLayerType="hardware"
-          mixedContentMode="compatibility"
+          // Allow mixed content and HTTP for better compatibility
+          mixedContentMode="always"
           allowsBackForwardNavigationGestures={false}
-          onError={handleError}
+          // Add originWhitelist to allow HTTP content
+          originWhitelist={["*"]}
+          // Additional security settings for HTTP content
+          onShouldStartLoadWithRequest={(request) => {
+            console.log("Loading request:", request.url);
+            return true; // Allow all requests
+          }}
+          onError={(syntheticEvent) => {
+            console.error("WebView error:", syntheticEvent.nativeEvent);
+            handleError();
+          }}
           onHttpError={(syntheticEvent) => {
             console.error("WebView HTTP error:", syntheticEvent.nativeEvent);
             handleError();
@@ -702,7 +738,37 @@ export default function SignageApp() {
       );
     }
 
+    // For images, use native Image component instead of WebView
     if (["png", "jpg", "jpeg", "gif", "webp"].includes(filetype)) {
+      return (
+        <View style={styles.imageContainer}>
+          <Image
+            source={{ uri: localPath }}
+            style={styles.image}
+            resizeMode="contain"
+            onError={(error) => {
+              console.error("Image error:", error.nativeEvent.error);
+              handleImageError();
+            }}
+            onLoad={() => {
+              console.log("Image loaded successfully:", localPath);
+            }}
+            onLoadStart={() => {
+              console.log("Image loading started:", localPath);
+            }}
+          />
+          {imageError && (
+            <View style={styles.errorOverlay}>
+              <Text style={styles.errorText}>Image Load Failed</Text>
+              <Text style={styles.errorSubtext}>{asset.name || filepath}</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    // For video files, use WebView with video-optimized HTML
+    if (filetype === "mp4") {
       const isLocal = localPath.startsWith("file://");
 
       return (
@@ -723,7 +789,7 @@ export default function SignageApp() {
                       overflow: hidden;
                       font-family: Arial, sans-serif;
                     }
-                    img { 
+                    video { 
                       max-width: 100vw; 
                       max-height: 100vh; 
                       object-fit: contain;
@@ -737,8 +803,8 @@ export default function SignageApp() {
                   </style>
                 </head>
                 <body>
-                  <img src="${localPath}" alt="Signage Content" 
-                       onerror="this.style.display='none'; document.body.innerHTML='<div class=error>Image load failed</div>'" />
+                  <video src="${localPath}" autoplay muted loop controls
+                         onerror="this.style.display='none'; document.body.innerHTML='<div class=error>Video load failed</div>'" />
                 </body>
               </html>`,
           }}
@@ -748,8 +814,10 @@ export default function SignageApp() {
           cacheEnabled={isLocal}
           incognito={!isLocal}
           androidLayerType="hardware"
+          mixedContentMode="always"
+          originWhitelist={["*"]}
           onError={handleError}
-          onLoadStart={() => console.log("Loading image:", localPath)}
+          onLoadStart={() => console.log("Loading video:", localPath)}
         />
       );
     }
@@ -900,6 +968,33 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
     backgroundColor: "#000000",
+  },
+  imageContainer: {
+    flex: 1,
+    backgroundColor: "#000000",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  image: {
+    width: screenWidth,
+    height: screenHeight,
+    backgroundColor: "#000000",
+  },
+  errorOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  errorSubtext: {
+    color: "#cccccc",
+    fontSize: 14,
+    textAlign: "center",
+    marginTop: 8,
   },
   unsupportedText: {
     color: "#ffffff",
