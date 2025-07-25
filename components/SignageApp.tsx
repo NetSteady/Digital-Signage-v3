@@ -23,6 +23,8 @@ const RETRY_DELAY = 60 * 1000; // 1 minute
 const MAX_RETRIES = 5;
 const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
+const MIN_ASSET_TIME = 5; // Minimum 5 seconds for any asset
+const MAX_ASSET_TIME = 300; // Maximum 5 minutes for debugging (remove in production)
 
 // Get screen dimensions
 const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
@@ -59,6 +61,8 @@ export default function SignageApp() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [networkStatus, setNetworkStatus] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
+  const [currentAssetStartTime, setCurrentAssetStartTime] = useState<number>(0);
+  const [remainingTime, setRemainingTime] = useState<number>(0);
 
   // Refs - Fixed timer types for React Native
   const webViewRef = useRef<WebView>(null);
@@ -68,6 +72,7 @@ export default function SignageApp() {
   const webViewRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(
     null
   );
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
@@ -234,6 +239,21 @@ export default function SignageApp() {
           }
         }
 
+        // Don't cache streaming platforms or live content
+        if (
+          filetype === "stream" ||
+          filepath.includes("twitch.tv") ||
+          filepath.includes("youtube.com") ||
+          filepath.includes("facebook.com/watch") ||
+          filepath.includes("instagram.com") ||
+          filepath.includes(".m3u8") ||
+          filepath.includes("rtmp://") ||
+          filepath.includes("rtsp://")
+        ) {
+          console.log(`Skipping cache for streaming content: ${filename}`);
+          return null;
+        }
+
         return null;
       } catch (error) {
         console.error(`Failed to download ${filename}:`, error);
@@ -383,12 +403,29 @@ export default function SignageApp() {
               parseInt(a.playing_order || "0") -
               parseInt(b.playing_order || "0")
           )
-          .map((asset) => ({
-            filepath: asset.filepath,
-            filetype: asset.filetype.toLowerCase(),
-            time: parseInt(asset.time),
-            name: asset.name || null,
-          }));
+          .map((asset) => {
+            let time = parseInt(asset.time);
+
+            // Enforce minimum time
+            time = Math.max(time, MIN_ASSET_TIME);
+
+            // For debugging: cap maximum time (remove this in production)
+            if (process.env.NODE_ENV === "development") {
+              time = Math.min(time, MAX_ASSET_TIME);
+              console.log(
+                `Asset ${asset.name || asset.filepath}: Original time ${
+                  asset.time
+                }s, Using ${time}s`
+              );
+            }
+
+            return {
+              filepath: asset.filepath,
+              filetype: asset.filetype.toLowerCase(),
+              time: time,
+              name: asset.name || null,
+            };
+          });
 
         if (essentialAssets.length === 0) {
           throw new Error("No valid assets found in playlist");
@@ -409,14 +446,55 @@ export default function SignageApp() {
 
   // Timer cleanup - Fixed for React Native
   const clearAllTimers = useCallback(() => {
+    console.log(`🧹 Clearing all timers...`);
+
     if (playbackTimer.current) {
+      console.log(`❌ Clearing playback timer:`, playbackTimer.current);
       clearTimeout(playbackTimer.current);
       playbackTimer.current = null;
     }
     if (retryTimer.current) {
+      console.log(`❌ Clearing retry timer:`, retryTimer.current);
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
+    if (countdownTimer.current) {
+      console.log(`❌ Clearing countdown timer:`, countdownTimer.current);
+      clearInterval(countdownTimer.current);
+      countdownTimer.current = null;
+    }
+  }, []);
+
+  // Countdown timer for debugging
+  const startCountdown = useCallback((duration: number) => {
+    const startTime = Date.now();
+    setCurrentAssetStartTime(startTime);
+    setRemainingTime(duration);
+
+    console.log(`⏳ Starting countdown: ${duration}s`);
+
+    if (countdownTimer.current) {
+      clearInterval(countdownTimer.current);
+    }
+
+    countdownTimer.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const remaining = Math.max(0, duration - elapsed);
+      setRemainingTime(remaining);
+
+      // Log every 5 seconds or when less than 10 seconds remain
+      if (remaining % 5 === 0 || remaining <= 10) {
+        console.log(
+          `⏰ Countdown: ${remaining}s remaining (elapsed: ${elapsed}s)`
+        );
+      }
+
+      if (remaining <= 0) {
+        console.log(`🔔 Countdown finished!`);
+        clearInterval(countdownTimer.current!);
+        countdownTimer.current = null;
+      }
+    }, 1000);
   }, []);
 
   // Asset playback
@@ -428,24 +506,42 @@ export default function SignageApp() {
       }
 
       const asset = assets[assetIndex];
+      const duration = asset.time * 1000; // Convert to milliseconds
+
       console.log(
-        `Playing asset ${assetIndex + 1}/${assets.length}: ${
+        `🎬 Playing asset ${assetIndex + 1}/${assets.length}: ${
           asset.name || "Unnamed"
-        } (${asset.filetype}) for ${asset.time}s`
+        } (${asset.filetype}) for ${asset.time}s (${duration}ms)`
       );
+      console.log(`📋 Asset details:`, JSON.stringify(asset, null, 2));
 
       clearAllTimers();
 
-      const duration = Math.max(asset.time * 1000, 5000); // Minimum 5 seconds
+      // Start countdown for debugging
+      startCountdown(asset.time);
+
+      console.log(`⏰ Setting timer for ${duration}ms`);
+      const timerStartTime = Date.now();
 
       playbackTimer.current = setTimeout(() => {
+        const actualDuration = Date.now() - timerStartTime;
+        console.log(
+          `⏱️ Timer fired after ${actualDuration}ms (expected ${duration}ms)`
+        );
+
         const nextIndex = (assetIndex + 1) % assets.length;
-        console.log(`Moving to next asset: ${nextIndex}`);
+        console.log(`➡️ Moving to next asset: ${nextIndex}`);
         setCurrentAssetIndex(nextIndex);
-        playAsset(nextIndex);
+
+        // Add a small delay to ensure state updates
+        setTimeout(() => {
+          playAsset(nextIndex);
+        }, 50);
       }, duration);
+
+      console.log(`✅ Playback timer set with ID:`, playbackTimer.current);
     },
-    [assets, clearAllTimers]
+    [assets, clearAllTimers, startCountdown]
   );
 
   // Retry logic with exponential backoff
@@ -650,91 +746,252 @@ export default function SignageApp() {
     const [localPath, setLocalPath] = useState<string>(filepath);
     const [loadError, setLoadError] = useState(false);
     const [imageError, setImageError] = useState(false);
+    const [connectionError, setConnectionError] = useState<string | null>(null);
 
     useEffect(() => {
       setLoadError(false);
       setImageError(false);
+      setConnectionError(null);
       getAssetPath(filepath, filetype).then(setLocalPath);
     }, [filepath, filetype]);
 
-    const handleError = useCallback(() => {
-      console.error(`Asset load error: ${filepath}`);
-      setLoadError(true);
+    const handleError = useCallback(
+      (errorMessage?: string) => {
+        console.error(`❌ Asset load error: ${filepath}`, errorMessage);
+        setLoadError(true);
 
-      if (!loadError) {
-        // Try fallback to original URL if cached version failed
-        if (localPath !== filepath) {
-          console.log("Trying original URL as fallback");
-          setLocalPath(filepath);
-        } else {
-          // Skip to next asset if all attempts failed
-          console.log("Skipping to next asset due to load failure");
-          setTimeout(() => {
-            const nextIndex = (currentAssetIndex + 1) % assets.length;
-            setCurrentAssetIndex(nextIndex);
-          }, 1000);
+        if (errorMessage) {
+          setConnectionError(errorMessage);
         }
-      }
-    }, [filepath, localPath, loadError, currentAssetIndex, assets.length]);
+
+        if (!loadError) {
+          // Try fallback to original URL if cached version failed
+          if (localPath !== filepath) {
+            console.log("🔄 Trying original URL as fallback");
+            setLocalPath(filepath);
+          } else {
+            // Skip to next asset if all attempts failed
+            console.log("⏭️ Skipping to next asset due to load failure");
+
+            // Clear the current timer before skipping
+            if (playbackTimer.current) {
+              console.log("🛑 Clearing timer due to asset error");
+              clearTimeout(playbackTimer.current);
+              playbackTimer.current = null;
+            }
+
+            setTimeout(() => {
+              const nextIndex = (currentAssetIndex + 1) % assets.length;
+              setCurrentAssetIndex(nextIndex);
+              playAsset(nextIndex);
+            }, 1000);
+          }
+        }
+      },
+      [
+        filepath,
+        localPath,
+        loadError,
+        currentAssetIndex,
+        assets.length,
+        playAsset,
+      ]
+    );
 
     const handleImageError = useCallback(() => {
-      console.error(`Image load error: ${filepath}`);
+      console.error(`🖼️ Image load error: ${filepath}`);
       setImageError(true);
 
       if (!imageError && localPath !== filepath) {
-        console.log("Trying original URL as fallback for image");
+        console.log("🔄 Trying original URL as fallback for image");
         setLocalPath(filepath);
       } else {
         // Skip to next asset if all attempts failed
-        console.log("Skipping to next asset due to image load failure");
+        console.log("⏭️ Skipping to next asset due to image load failure");
+
+        // Clear the current timer before skipping
+        if (playbackTimer.current) {
+          console.log("🛑 Clearing timer due to image error");
+          clearTimeout(playbackTimer.current);
+          playbackTimer.current = null;
+        }
+
         setTimeout(() => {
           const nextIndex = (currentAssetIndex + 1) % assets.length;
           setCurrentAssetIndex(nextIndex);
+          playAsset(nextIndex);
         }, 1000);
       }
-    }, [filepath, localPath, imageError, currentAssetIndex, assets.length]);
+    }, [
+      filepath,
+      localPath,
+      imageError,
+      currentAssetIndex,
+      assets.length,
+      playAsset,
+    ]);
 
     // For HTML/URL content, use WebView with better error handling and HTTP support
-    if (filetype === "html" || filetype === "url") {
+    if (filetype === "html" || filetype === "url" || filetype === "stream") {
       const isLocal = localPath.startsWith("file://");
+      const isLivestream =
+        filetype === "stream" ||
+        filepath.includes(".m3u8") ||
+        filepath.includes("rtmp://") ||
+        filepath.includes("rtsp://") ||
+        filepath.includes("/live/") ||
+        filepath.includes("webrtc.html") ||
+        filepath.includes("twitch.tv") ||
+        filepath.includes("youtube.com") ||
+        filepath.includes("facebook.com/watch") ||
+        filepath.includes("instagram.com");
 
       return (
-        <WebView
-          ref={webViewRef}
-          source={{ uri: localPath }}
-          style={styles.webview}
-          javaScriptEnabled={true}
-          domStorageEnabled={false}
-          mediaPlaybackRequiresUserAction={false}
-          allowsInlineMediaPlayback={true}
-          cacheEnabled={isLocal}
-          incognito={!isLocal}
-          androidLayerType="hardware"
-          // Allow mixed content and HTTP for better compatibility
-          mixedContentMode="always"
-          allowsBackForwardNavigationGestures={false}
-          // Add originWhitelist to allow HTTP content
-          originWhitelist={["*"]}
-          // Additional security settings for HTTP content
-          onShouldStartLoadWithRequest={(request) => {
-            console.log("Loading request:", request.url);
-            return true; // Allow all requests
-          }}
-          onError={(syntheticEvent) => {
-            console.error("WebView error:", syntheticEvent.nativeEvent);
-            handleError();
-          }}
-          onHttpError={(syntheticEvent) => {
-            console.error("WebView HTTP error:", syntheticEvent.nativeEvent);
-            handleError();
-          }}
-          onLoadStart={() =>
-            console.log("Loading:", isLocal ? "cached" : "remote", localPath)
-          }
-          onLoadEnd={() =>
-            console.log("Load completed:", isLocal ? "cached" : "remote")
-          }
-        />
+        <View style={styles.webviewContainer}>
+          <WebView
+            ref={webViewRef}
+            source={{ uri: localPath }}
+            style={styles.webview}
+            javaScriptEnabled={true}
+            domStorageEnabled={true} // Enable for streaming platforms
+            mediaPlaybackRequiresUserAction={false}
+            allowsInlineMediaPlayback={true}
+            cacheEnabled={isLocal && !isLivestream} // Don't cache livestreams
+            incognito={!isLocal || isLivestream} // Always incognito for livestreams
+            androidLayerType="hardware"
+            // Allow mixed content and HTTP for better compatibility
+            mixedContentMode="always"
+            allowsBackForwardNavigationGestures={false}
+            // Add originWhitelist to allow HTTP content
+            originWhitelist={["*"]}
+            // Additional settings for livestreams and streaming platforms
+            startInLoadingState={true}
+            renderLoading={() => (
+              <View style={styles.webviewLoading}>
+                <Text style={styles.loadingText}>
+                  {isLivestream ? "Connecting to stream..." : "Loading..."}
+                </Text>
+              </View>
+            )}
+            // User agent for better compatibility with streaming platforms
+            userAgent="Mozilla/5.0 (Linux; Android 10; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Safari/537.36 SmartTV"
+            // Additional security settings for HTTP content
+            onShouldStartLoadWithRequest={(request) => {
+              console.log("📡 Loading request:", request.url);
+              // Allow navigation within streaming platforms
+              return true;
+            }}
+            onError={(syntheticEvent) => {
+              const error = syntheticEvent.nativeEvent;
+              console.error("🌐 WebView error:", error);
+
+              let errorMessage = error.description || "Unknown error";
+              if (error.code === -2) {
+                errorMessage =
+                  "ERR_CONNECTION_REFUSED - Cannot connect to server";
+              } else if (error.code === -6) {
+                errorMessage = "ERR_CONNECTION_RESET - Connection was reset";
+              } else if (error.code === -7) {
+                errorMessage = "ERR_TIMED_OUT - Connection timed out";
+              } else if (error.code === -8) {
+                errorMessage = "ERR_CONNECTION_CLOSED - Connection closed";
+              } else if (error.code === -109) {
+                errorMessage = "ERR_ADDRESS_UNREACHABLE - Server unreachable";
+              }
+
+              handleError(errorMessage);
+            }}
+            onHttpError={(syntheticEvent) => {
+              const httpError = syntheticEvent.nativeEvent;
+              console.error("🌐 WebView HTTP error:", httpError);
+
+              let errorMessage = `HTTP ${httpError.statusCode}`;
+              if (httpError.statusCode === 404) {
+                errorMessage += " - Stream not found or offline";
+              } else if (httpError.statusCode === 403) {
+                errorMessage += " - Access forbidden";
+              } else if (httpError.statusCode === 500) {
+                errorMessage += " - Server error";
+              } else if (httpError.statusCode === 503) {
+                errorMessage += " - Service unavailable";
+              }
+
+              handleError(errorMessage);
+            }}
+            onLoadStart={() => {
+              console.log(
+                "🔄 Loading:",
+                isLocal ? "cached" : isLivestream ? "livestream" : "remote",
+                localPath
+              );
+            }}
+            onLoadEnd={() => {
+              console.log(
+                "✅ Load completed:",
+                isLocal ? "cached" : isLivestream ? "livestream" : "remote"
+              );
+            }}
+            onLoadProgress={({ nativeEvent }) => {
+              if (!isLivestream && nativeEvent.progress < 1) {
+                console.log(
+                  `📊 Loading progress: ${Math.round(
+                    nativeEvent.progress * 100
+                  )}%`
+                );
+              }
+            }}
+            // Handle navigation for streaming platforms
+            onNavigationStateChange={(navState) => {
+              console.log("🧭 Navigation:", navState.url);
+              // You can add logic here to handle redirects if needed
+            }}
+          />
+
+          {/* Debug overlay for development */}
+          {process.env.NODE_ENV === "development" && (
+            <View style={styles.debugOverlay}>
+              <Text style={styles.debugText}>
+                Asset: {currentAssetIndex + 1}/{assets.length}
+              </Text>
+              <Text style={styles.debugText}>
+                Time: {remainingTime}s remaining
+              </Text>
+              <Text style={styles.debugText}>
+                Type:{" "}
+                {isLivestream
+                  ? "📡 Stream"
+                  : isLocal
+                  ? "💾 Cached"
+                  : "🌐 Remote"}
+              </Text>
+              <Text style={styles.debugText}>
+                Platform:{" "}
+                {filepath.includes("twitch.tv")
+                  ? "Twitch"
+                  : filepath.includes("youtube.com")
+                  ? "YouTube"
+                  : filepath.includes("facebook.com")
+                  ? "Facebook"
+                  : filepath.includes("instagram.com")
+                  ? "Instagram"
+                  : filepath.includes("webrtc.html")
+                  ? "WebRTC"
+                  : "Web"}
+              </Text>
+              <Text style={styles.debugText}>
+                URL:{" "}
+                {localPath.length > 35
+                  ? localPath.substring(0, 35) + "..."
+                  : localPath}
+              </Text>
+              {connectionError && (
+                <Text style={styles.errorDebugText}>
+                  Error: {connectionError}
+                </Text>
+              )}
+            </View>
+          )}
+        </View>
       );
     }
 
@@ -763,62 +1020,261 @@ export default function SignageApp() {
               <Text style={styles.errorSubtext}>{asset.name || filepath}</Text>
             </View>
           )}
+
+          {/* Debug overlay for development */}
+          {process.env.NODE_ENV === "development" && (
+            <View style={styles.debugOverlay}>
+              <Text style={styles.debugText}>
+                Asset: {currentAssetIndex + 1}/{assets.length}
+              </Text>
+              <Text style={styles.debugText}>
+                Time: {remainingTime}s remaining
+              </Text>
+            </View>
+          )}
         </View>
       );
     }
 
-    // For video files, use WebView with video-optimized HTML
-    if (filetype === "mp4") {
+    // For video files and livestreams, use WebView with video-optimized HTML
+    if (
+      filetype === "mp4" ||
+      filetype === "m3u8" ||
+      filetype === "hls" ||
+      filetype === "livestream"
+    ) {
       const isLocal = localPath.startsWith("file://");
+      const isLivestream =
+        filetype === "m3u8" ||
+        filetype === "hls" ||
+        filetype === "livestream" ||
+        localPath.includes(".m3u8") ||
+        localPath.includes("rtmp://") ||
+        localPath.includes("rtsp://") ||
+        localPath.includes("/live/");
+
+      const videoHtml = `<!DOCTYPE html>
+        <html>
+          <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+            <style>
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+              body { 
+                background: #000; 
+                display: flex; 
+                justify-content: center; 
+                align-items: center; 
+                height: 100vh;
+                overflow: hidden;
+                font-family: Arial, sans-serif;
+              }
+              video { 
+                max-width: 100vw; 
+                max-height: 100vh; 
+                object-fit: contain;
+                display: block;
+              }
+              .error {
+                color: white;
+                text-align: center;
+                font-size: 18px;
+                padding: 20px;
+              }
+              .loading {
+                color: white;
+                text-align: center;
+                font-size: 16px;
+                padding: 20px;
+              }
+            </style>
+            ${
+              isLivestream
+                ? `
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.10/hls.min.js"></script>
+            `
+                : ""
+            }
+          </head>
+          <body>
+            <div id="loading" class="loading">Loading ${
+              isLivestream ? "livestream" : "video"
+            }...</div>
+            <video id="video" style="display:none;" ${
+              isLivestream ? "" : "controls"
+            } autoplay muted ${isLivestream ? "playsinline" : "loop"}>
+              ${
+                !isLivestream
+                  ? `<source src="${localPath}" type="video/mp4">`
+                  : ""
+              }
+            </video>
+            
+            <script>
+              const video = document.getElementById('video');
+              const loading = document.getElementById('loading');
+              
+              function showError(message) {
+                loading.innerHTML = '<div class="error">Error: ' + message + '</div>';
+                console.error('Video error:', message);
+              }
+              
+              function hideLoading() {
+                loading.style.display = 'none';
+                video.style.display = 'block';
+              }
+              
+              ${
+                isLivestream
+                  ? `
+              // HLS/M3U8 Livestream support
+              if (Hls.isSupported()) {
+                const hls = new Hls({
+                  enableWorker: true,
+                  lowLatencyMode: true,
+                  backBufferLength: 90,
+                  maxBufferLength: 30,
+                  maxMaxBufferLength: 60,
+                  maxBufferSize: 60 * 1000 * 1000,
+                  maxBufferHole: 0.5,
+                  startLevel: -1,
+                  autoStartLoad: true,
+                  startFragPrefetch: true,
+                  testBandwidth: false
+                });
+                
+                hls.loadSource('${localPath}');
+                hls.attachMedia(video);
+                
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                  console.log('HLS manifest parsed, starting playback');
+                  hideLoading();
+                  video.play().catch(e => showError('Playback failed: ' + e.message));
+                });
+                
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                  console.error('HLS error:', data);
+                  if (data.fatal) {
+                    switch(data.type) {
+                      case Hls.ErrorTypes.NETWORK_ERROR:
+                        showError('Network error - check connection');
+                        setTimeout(() => hls.startLoad(), 5000);
+                        break;
+                      case Hls.ErrorTypes.MEDIA_ERROR:
+                        showError('Media error - trying to recover');
+                        hls.recoverMediaError();
+                        break;
+                      default:
+                        showError('Fatal error occurred');
+                        break;
+                    }
+                  }
+                });
+                
+                video.addEventListener('loadstart', () => console.log('Video loading started'));
+                video.addEventListener('canplay', () => {
+                  console.log('Video can start playing');
+                  hideLoading();
+                });
+                
+              } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari, some Android browsers)
+                video.src = '${localPath}';
+                video.addEventListener('loadstart', () => console.log('Native HLS loading'));
+                video.addEventListener('canplay', () => {
+                  hideLoading();
+                  video.play().catch(e => showError('Playback failed: ' + e.message));
+                });
+              } else {
+                showError('HLS not supported on this device');
+              }
+              `
+                  : `
+              // Regular MP4 video
+              video.addEventListener('loadstart', () => console.log('Video loading started'));
+              video.addEventListener('canplay', () => {
+                console.log('Video can start playing');
+                hideLoading();
+              });
+              video.addEventListener('error', (e) => {
+                console.error('Video error:', e);
+                showError('Video load failed');
+              });
+              
+              // Start loading
+              video.load();
+              `
+              }
+              
+              // Common event handlers
+              video.addEventListener('waiting', () => console.log('Video buffering...'));
+              video.addEventListener('playing', () => console.log('Video playing'));
+              video.addEventListener('pause', () => console.log('Video paused'));
+              video.addEventListener('ended', () => console.log('Video ended'));
+              
+            </script>
+          </body>
+        </html>`;
 
       return (
-        <WebView
-          source={{
-            html: `<!DOCTYPE html>
-              <html>
-                <head>
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-                  <style>
-                    * { margin: 0; padding: 0; box-sizing: border-box; }
-                    body { 
-                      background: #000; 
-                      display: flex; 
-                      justify-content: center; 
-                      align-items: center; 
-                      height: 100vh;
-                      overflow: hidden;
-                      font-family: Arial, sans-serif;
-                    }
-                    video { 
-                      max-width: 100vw; 
-                      max-height: 100vh; 
-                      object-fit: contain;
-                      display: block;
-                    }
-                    .error {
-                      color: white;
-                      text-align: center;
-                      font-size: 18px;
-                    }
-                  </style>
-                </head>
-                <body>
-                  <video src="${localPath}" autoplay muted loop controls
-                         onerror="this.style.display='none'; document.body.innerHTML='<div class=error>Video load failed</div>'" />
-                </body>
-              </html>`,
-          }}
-          style={styles.webview}
-          javaScriptEnabled={true}
-          domStorageEnabled={false}
-          cacheEnabled={isLocal}
-          incognito={!isLocal}
-          androidLayerType="hardware"
-          mixedContentMode="always"
-          originWhitelist={["*"]}
-          onError={handleError}
-          onLoadStart={() => console.log("Loading video:", localPath)}
-        />
+        <View style={styles.webviewContainer}>
+          <WebView
+            source={{ html: videoHtml }}
+            style={styles.webview}
+            javaScriptEnabled={true}
+            domStorageEnabled={false}
+            cacheEnabled={!isLivestream}
+            incognito={isLivestream}
+            androidLayerType="hardware"
+            mixedContentMode="always"
+            originWhitelist={["*"]}
+            allowsInlineMediaPlayback={true}
+            mediaPlaybackRequiresUserAction={false}
+            startInLoadingState={true}
+            renderLoading={() => (
+              <View style={styles.webviewLoading}>
+                <Text style={styles.loadingText}>
+                  {isLivestream
+                    ? "Connecting to livestream..."
+                    : "Loading video..."}
+                </Text>
+              </View>
+            )}
+            onError={(error) => {
+              console.error("📹 Video WebView error:", error.nativeEvent);
+              handleError(error.nativeEvent.description);
+            }}
+            onLoadStart={() =>
+              console.log(
+                "📹 Loading video:",
+                isLivestream ? "livestream" : "file",
+                localPath
+              )
+            }
+            onLoadEnd={() => console.log("✅ Video load completed")}
+            onMessage={(event) => {
+              // Handle messages from the video player if needed
+              console.log("📹 Video message:", event.nativeEvent.data);
+            }}
+          />
+
+          {/* Debug overlay for development */}
+          {process.env.NODE_ENV === "development" && (
+            <View style={styles.debugOverlay}>
+              <Text style={styles.debugText}>
+                Asset: {currentAssetIndex + 1}/{assets.length}
+              </Text>
+              <Text style={styles.debugText}>
+                Time: {remainingTime}s remaining
+              </Text>
+              <Text style={styles.debugText}>
+                Type: {isLivestream ? "📡 Livestream" : "📹 Video"}
+              </Text>
+              <Text style={styles.debugText}>
+                Format: {filetype.toUpperCase()}
+              </Text>
+            </View>
+          )}
+        </View>
       );
     }
 
@@ -965,9 +1421,19 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontStyle: "italic",
   },
+  webviewContainer: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
   webview: {
     flex: 1,
     backgroundColor: "#000000",
+  },
+  webviewLoading: {
+    flex: 1,
+    backgroundColor: "#000000",
+    justifyContent: "center",
+    alignItems: "center",
   },
   imageContainer: {
     flex: 1,
@@ -1006,5 +1472,26 @@ const styles = StyleSheet.create({
     color: "#cccccc",
     fontSize: 16,
     textAlign: "center",
+  },
+  debugOverlay: {
+    position: "absolute",
+    top: 20,
+    left: 20,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    padding: 10,
+    borderRadius: 5,
+    maxWidth: 300,
+  },
+  debugText: {
+    color: "#ffffff",
+    fontSize: 12,
+    marginBottom: 2,
+    fontFamily: "monospace",
+  },
+  errorDebugText: {
+    color: "#ff6666",
+    fontSize: 12,
+    marginTop: 5,
+    fontFamily: "monospace",
   },
 });
