@@ -63,6 +63,7 @@ export default function SignageApp() {
   const [retryCount, setRetryCount] = useState(0);
   const [currentAssetStartTime, setCurrentAssetStartTime] = useState<number>(0);
   const [remainingTime, setRemainingTime] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState(false); // Add playing state
 
   // Refs - Fixed timer types for React Native
   const webViewRef = useRef<WebView>(null);
@@ -76,7 +77,7 @@ export default function SignageApp() {
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
-  const skipAssetRef = useRef<boolean>(false); // Flag to prevent double skipping
+  const isTransitioning = useRef<boolean>(false); // Prevent multiple transitions
 
   useKeepAwake(); //keeping the app awake
 
@@ -498,118 +499,84 @@ export default function SignageApp() {
     }, 1000);
   }, []);
 
-  // Skip to next asset (centralized function)
-  const skipToNextAsset = useCallback(() => {
-    if (skipAssetRef.current) {
-      console.log("⏭️ Skip already in progress, ignoring");
+  // FIXED: Simplified asset switching function
+  const switchToNextAsset = useCallback(() => {
+    if (isTransitioning.current) {
+      console.log("⏭️ Transition already in progress, ignoring");
       return;
     }
 
-    skipAssetRef.current = true;
-    console.log("⏭️ Skipping to next asset");
+    if (assets.length === 0) {
+      console.error("❌ No assets available for switching");
+      return;
+    }
 
-    // Clear all timers first
+    isTransitioning.current = true;
+    console.log("⏭️ Switching to next asset");
+
+    // Clear all timers
     clearAllTimers();
 
-    // Use current assets length to calculate next index
-    const currentAssetsLength = assets.length;
-    if (currentAssetsLength === 0) {
-      console.error("❌ No assets available for switching");
-      skipAssetRef.current = false;
-      return;
-    }
-
-    const nextIndex = (currentAssetIndex + 1) % currentAssetsLength;
+    // Calculate next index
+    const nextIndex = (currentAssetIndex + 1) % assets.length;
     console.log(
-      `➡️ Moving from asset ${currentAssetIndex + 1} to ${
-        nextIndex + 1
-      }/${currentAssetsLength}`
+      `➡️ Moving from asset ${currentAssetIndex + 1} to ${nextIndex + 1}/${
+        assets.length
+      }`
     );
 
-    // Check if we're looping back to start
-    if (nextIndex === 0 && currentAssetIndex > 0) {
-      console.log("🔄 Looping back to first asset");
-    }
-
-    // Update the index
+    // Update the index immediately
     setCurrentAssetIndex(nextIndex);
+    setIsPlaying(false); // Reset playing state
 
-    // Start the next asset after a short delay
+    // Allow transition after a brief moment
     setTimeout(() => {
-      skipAssetRef.current = false;
-      if (assets.length > 0 && assets[nextIndex]) {
-        console.log(
-          `🎬 Starting asset ${nextIndex + 1}: ${
-            assets[nextIndex].name || "Unnamed"
-          }`
-        );
-        playAsset(nextIndex, assets);
-      } else {
-        console.error(`❌ Asset ${nextIndex} not found in assets array`);
-      }
-    }, 50);
-  }, [currentAssetIndex, assets, clearAllTimers]);
+      isTransitioning.current = false;
+      setIsPlaying(true); // Trigger the new asset to start
+    }, 100);
+  }, [currentAssetIndex, assets.length, clearAllTimers]);
 
-  // Asset playbook - simplified and more reliable
-  const playAsset = useCallback(
-    (assetIndex: number, assetsArray?: Asset[]) => {
-      const currentAssets = assetsArray || assets;
-
-      console.log(
-        `🎯 playAsset called with index ${assetIndex}, assets length: ${currentAssets.length}`
-      );
-
-      if (currentAssets.length === 0) {
-        console.error("❌ No assets available");
+  // FIXED: Simplified asset playback function
+  const startAssetPlayback = useCallback(
+    (assetIndex: number) => {
+      if (assets.length === 0 || !assets[assetIndex]) {
+        console.error(`❌ Asset at index ${assetIndex} not found`);
         return;
       }
 
-      if (!currentAssets[assetIndex]) {
-        console.error(
-          `❌ Asset at index ${assetIndex} not found. Available indices: 0-${
-            currentAssets.length - 1
-          }`
-        );
-        return;
-      }
-
-      const asset = currentAssets[assetIndex];
+      const asset = assets[assetIndex];
       const duration = asset.time * 1000; // Convert to milliseconds
 
       console.log(
-        `🎬 Playing asset ${assetIndex + 1}/${currentAssets.length}: ${
+        `🎬 Starting playback for asset ${assetIndex + 1}/${assets.length}: ${
           asset.name || "Unnamed"
-        } (${asset.filetype}) for ${asset.time}s (${duration}ms)`
+        } (${asset.filetype}) for ${asset.time}s`
       );
-      console.log(`📋 Asset details:`, JSON.stringify(asset, null, 2));
 
-      // Clear existing timers
+      // Clear any existing timers
       clearAllTimers();
-
-      // Reset skip flag
-      skipAssetRef.current = false;
 
       // Start countdown for debugging
       startCountdown(asset.time);
 
+      // Set the playback timer
       console.log(`⏰ Setting timer for ${duration}ms`);
-      const timerStartTime = Date.now();
-
       playbackTimer.current = setTimeout(() => {
-        const actualDuration = Date.now() - timerStartTime;
-        console.log(
-          `⏱️ Timer fired after ${actualDuration}ms (expected ${duration}ms)`
-        );
-        console.log(`🔥 Timer callback executing - moving to next asset`);
-
-        // Skip to next asset
-        skipToNextAsset();
+        console.log(`⏱️ Timer finished - switching to next asset`);
+        switchToNextAsset();
       }, duration);
 
-      console.log(`✅ Playback timer set with ID:`, playbackTimer.current);
+      console.log(`✅ Playback timer set`);
     },
-    [assets, clearAllTimers, startCountdown, skipToNextAsset]
+    [assets, clearAllTimers, startCountdown, switchToNextAsset]
   );
+
+  // FIXED: Effect to start playback when asset changes and is playing
+  useEffect(() => {
+    if (isPlaying && assets.length > 0 && assets[currentAssetIndex]) {
+      startAssetPlayback(currentAssetIndex);
+    }
+  }, [currentAssetIndex, isPlaying, assets, startAssetPlayback]);
 
   // Retry logic with exponential backoff
   const scheduleRetry = useCallback(() => {
@@ -671,11 +638,12 @@ export default function SignageApp() {
     [networkStatus, getAssetPath]
   );
 
-  // Main initialization
+  // FIXED: Main initialization
   const initializeApp = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
+      setIsPlaying(false); // Stop any current playback
       clearAllTimers();
 
       console.log("🚀 Starting app initialization...");
@@ -698,12 +666,16 @@ export default function SignageApp() {
         await preCacheAllAssets(result.assets);
 
         console.log("🎬 Starting playback with fully cached assets");
-        // Start playback with the new assets array
+
+        // Start playback after everything is ready
         setTimeout(() => {
-          playAsset(0, result.assets);
-        }, 100);
+          setIsPlaying(true);
+        }, 500);
       } else {
         console.log("✅ Playlist unchanged, continuing with current assets");
+        if (!isPlaying) {
+          setIsPlaying(true);
+        }
       }
 
       setRetryCount(0);
@@ -713,6 +685,7 @@ export default function SignageApp() {
       console.error("💥 Initialization error:", error);
       setError(error instanceof Error ? error.message : String(error));
       setIsLoading(false);
+      setIsPlaying(false);
       scheduleRetry();
     }
   }, [
@@ -720,9 +693,9 @@ export default function SignageApp() {
     fetchPlaylist,
     assets.length,
     clearAllTimers,
-    playAsset,
     scheduleRetry,
     preCacheAllAssets,
+    isPlaying,
   ]);
 
   // Periodic API checks
@@ -748,10 +721,12 @@ export default function SignageApp() {
             console.log("Asset count changed, restarting playback");
             setAssets(periodicResult.assets);
             setCurrentAssetIndex(0);
+            setIsPlaying(false);
             clearAllTimers();
+
             // Pre-cache all assets before restarting
             await preCacheAllAssets(periodicResult.assets);
-            setTimeout(() => playAsset(0, periodicResult.assets), 100);
+            setTimeout(() => setIsPlaying(true), 500);
           }
         }
       } catch (error) {
@@ -766,7 +741,6 @@ export default function SignageApp() {
     fetchPlaylist,
     assets.length,
     clearAllTimers,
-    playAsset,
     preCacheAllAssets,
   ]);
 
@@ -870,10 +844,10 @@ export default function SignageApp() {
         // If all attempts failed, skip to next asset
         console.log("⏭️ All attempts failed, skipping to next asset");
         setTimeout(() => {
-          skipToNextAsset();
+          switchToNextAsset();
         }, 1000);
       },
-      [filepath, localPath, loadError, skipToNextAsset]
+      [filepath, localPath, loadError, switchToNextAsset]
     );
 
     const handleImageError = useCallback(() => {
@@ -890,9 +864,9 @@ export default function SignageApp() {
       // If all attempts failed, skip to next asset
       console.log("⏭️ Image load failed, skipping to next asset");
       setTimeout(() => {
-        skipToNextAsset();
+        switchToNextAsset();
       }, 1000);
-    }, [filepath, localPath, imageError, skipToNextAsset]);
+    }, [filepath, localPath, imageError, switchToNextAsset]);
 
     // For HTML/URL content, use WebView with better error handling and HTTP support
     if (filetype === "html" || filetype === "url" || filetype === "stream") {
@@ -1496,7 +1470,7 @@ export default function SignageApp() {
 
   const currentAsset = assets[currentAssetIndex];
   console.log(
-    `🎯 Rendering check - currentAssetIndex: ${currentAssetIndex}, assets.length: ${assets.length}`
+    `🎯 Rendering check - currentAssetIndex: ${currentAssetIndex}, assets.length: ${assets.length}, isPlaying: ${isPlaying}`
   );
   console.log(`🎯 Current asset exists: ${!!currentAsset}`);
 
