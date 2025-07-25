@@ -1130,10 +1130,12 @@ export default function SignageApp() {
                 console.error('Video error:', message);
                 // Notify parent about error after 3 seconds
                 setTimeout(() => {
-                  window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
-                    type: 'error',
-                    message: message
-                  }));
+                  if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                      type: 'error',
+                      message: message
+                    }));
+                  }
                 }, 3000);
               }
               
@@ -1143,9 +1145,11 @@ export default function SignageApp() {
                 video.style.display = 'block';
                 console.log('Video ready to play');
                 // Notify parent that video is ready
-                window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({
-                  type: 'ready'
-                }));
+                if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+                  window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'ready'
+                  }));
+                }
               }
               
               // Set a timeout for loading
@@ -1357,6 +1361,7 @@ export default function SignageApp() {
                   console.log("📹 Video is ready to play");
                 }
               } catch (e) {
+                // If it's not JSON, just log the raw message
                 console.log("📹 Video message (raw):", event.nativeEvent.data);
               }
             }}
