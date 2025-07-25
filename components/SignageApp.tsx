@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import NetInfo from "@react-native-community/netinfo";
 import * as FileSystem from "expo-file-system";
+import { useKeepAwake } from "expo-keep-awake";
 import { StatusBar } from "expo-status-bar";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -15,10 +16,10 @@ import {
 import { WebView } from "react-native-webview";
 
 const TV_SAFE_AREA_MARGIN = 48;
-const API_CHECK_INTERVAL = 30 * 60 * 1000;
-const RETRY_DELAY = 60 * 1000;
+const API_CHECK_INTERVAL = 30 * 60 * 1000; // 30 minutes
+const RETRY_DELAY = 60 * 1000; // 1 minute
 const MAX_RETRIES = 5;
-const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000;
+const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
 
 interface Asset {
@@ -54,15 +55,19 @@ export default function SignageApp() {
   const [networkStatus, setNetworkStatus] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
 
-  // Refs
+  // Refs - Fixed timer types for React Native
   const webViewRef = useRef<WebView>(null);
-  const playbackTimer = useRef<NodeJS.Timeout | null>(null);
-  const apiCheckTimer = useRef<NodeJS.Timeout | null>(null);
-  const retryTimer = useRef<NodeJS.Timeout | null>(null);
-  const webViewRefreshTimer = useRef<NodeJS.Timeout | null>(null);
+  const playbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const apiCheckTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const webViewRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(
+    null
+  );
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
+
+  useKeepAwake(); //keeping the app awake
 
   // Initialize cache directory
   const initCacheDirectory = useCallback(async () => {
@@ -95,22 +100,20 @@ export default function SignageApp() {
           }
         } catch (e) {
           console.error("Failed to get Android device name:", e);
-          throw new Error(
-            "Cannot retrieve device name. Please ensure the device has a configured name in Android Settings."
-          );
+          // For T95 TV boxes, provide a fallback
+          actualDeviceName = "T95_TV_Box";
+          console.log("Using fallback device name for TV box");
         }
 
         // Validate we got a real device name
         if (
           !actualDeviceName ||
           actualDeviceName === "unknown" ||
-          actualDeviceName === "" ||
-          actualDeviceName.toLowerCase().includes("mbox") ||
-          actualDeviceName.toLowerCase().includes("android")
+          actualDeviceName === ""
         ) {
-          throw new Error(
-            "Device name not properly configured. Please set a unique device name in Android Settings > About Device > Device Name"
-          );
+          // Generate a unique identifier for the TV box
+          actualDeviceName = `T95_${Math.random().toString(36).substr(2, 9)}`;
+          console.log("Generated unique device name:", actualDeviceName);
         }
 
         // Clean for URL safety
@@ -127,7 +130,11 @@ export default function SignageApp() {
       return savedDeviceName;
     } catch (error) {
       console.error("Error getting device name:", error);
-      throw error; // Don't continue without proper device name
+      // Fallback for TV boxes
+      const fallbackName = `tvbox_${Date.now()}`;
+      setDeviceName(fallbackName);
+      await AsyncStorage.setItem("deviceName", fallbackName);
+      return fallbackName;
     }
   }, []);
 
@@ -199,10 +206,19 @@ export default function SignageApp() {
           const timeoutId = setTimeout(() => controller.abort(), 30000);
           try {
             const response = await fetch(filepath, {
-              headers: { "User-Agent": "SignageApp/1.0" },
+              headers: {
+                "User-Agent": "SignageApp/1.0 (Android TV Box)",
+                Accept:
+                  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              },
               signal: controller.signal,
             });
             clearTimeout(timeoutId);
+
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+
             const htmlContent = await response.text();
             await FileSystem.writeAsStringAsync(localPath, htmlContent);
             console.log(`Cached HTML: ${filename}`);
@@ -254,8 +270,12 @@ export default function SignageApp() {
     const unsubscribe = NetInfo.addEventListener((state) => {
       const connected = state.isConnected ?? false;
       setNetworkStatus(connected);
+      console.log(
+        `Network status: ${connected ? "Connected" : "Disconnected"}`
+      );
 
       if (connected && error && retryCount < MAX_RETRIES) {
+        console.log("Network reconnected, attempting to recover...");
         setTimeout(() => initializeApp(), 3000);
       }
     });
@@ -263,9 +283,13 @@ export default function SignageApp() {
     return () => unsubscribe();
   }, [error, retryCount]);
 
-  // App state monitoring
+  // App state monitoring - optimized for TV boxes
   useEffect(() => {
     const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      console.log(
+        `App state changed: ${appStateRef.current} -> ${nextAppState}`
+      );
+
       if (appStateRef.current === "background" && nextAppState === "active") {
         console.log("App resumed from background");
         if (error || assets.length === 0) {
@@ -290,7 +314,10 @@ export default function SignageApp() {
       }
 
       try {
-        const apiUrl = `https://www.applicationbank.com/signage/api.php?id=${deviceName}`;
+        const apiUrl = `https://www.applicationbank.com/signage/api.php?id=${encodeURIComponent(
+          deviceName
+        )}`;
+        console.log(`Fetching playlist from: ${apiUrl}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -300,6 +327,7 @@ export default function SignageApp() {
           headers: {
             "Content-Type": "application/json",
             "Cache-Control": "no-cache",
+            "User-Agent": "SignageApp/1.0 (Android TV Box)",
           },
           signal: controller.signal,
         });
@@ -307,10 +335,13 @@ export default function SignageApp() {
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-          throw new Error(`API Error: ${response.status}`);
+          throw new Error(
+            `API Error: ${response.status} ${response.statusText}`
+          );
         }
 
         const data: ApiResponse = await response.json();
+        console.log("API Response received:", JSON.stringify(data, null, 2));
 
         const responseString = JSON.stringify(data);
         const hasChanged = lastApiResponseRef.current !== responseString;
@@ -327,8 +358,12 @@ export default function SignageApp() {
           }
         }
 
-        if (!data.playlists?.[0]?.assets) {
-          throw new Error("No valid playlist data");
+        if (!data.playlists || data.playlists.length === 0) {
+          throw new Error("No playlists found in API response");
+        }
+
+        if (!data.playlists[0]?.assets) {
+          throw new Error("No assets found in playlist");
         }
 
         const playlist =
@@ -351,22 +386,23 @@ export default function SignageApp() {
           }));
 
         if (essentialAssets.length === 0) {
-          throw new Error("No valid assets found");
+          throw new Error("No valid assets found in playlist");
         }
 
-        console.log(`Loaded ${essentialAssets.length} assets`);
+        console.log(`Loaded ${essentialAssets.length} assets successfully`);
         return { assets: essentialAssets, hasChanged };
       } catch (error) {
         if ((error as any).name === "AbortError") {
-          throw new Error("Request timeout");
+          throw new Error("Request timeout - check network connection");
         }
+        console.error("API fetch error:", error);
         throw error;
       }
     },
     [networkStatus, initCacheDirectory]
   );
 
-  // Timer cleanup
+  // Timer cleanup - Fixed for React Native
   const clearAllTimers = useCallback(() => {
     if (playbackTimer.current) {
       clearTimeout(playbackTimer.current);
@@ -381,21 +417,25 @@ export default function SignageApp() {
   // Asset playback
   const playAsset = useCallback(
     (assetIndex: number) => {
-      if (!assets[assetIndex]) return;
+      if (!assets[assetIndex]) {
+        console.error(`Asset at index ${assetIndex} not found`);
+        return;
+      }
 
       const asset = assets[assetIndex];
       console.log(
         `Playing asset ${assetIndex + 1}/${assets.length}: ${
           asset.name || "Unnamed"
-        }`
+        } (${asset.filetype}) for ${asset.time}s`
       );
 
       clearAllTimers();
 
-      const duration = Math.max(asset.time * 1000, 5000);
+      const duration = Math.max(asset.time * 1000, 5000); // Minimum 5 seconds
 
       playbackTimer.current = setTimeout(() => {
         const nextIndex = (assetIndex + 1) % assets.length;
+        console.log(`Moving to next asset: ${nextIndex}`);
         setCurrentAssetIndex(nextIndex);
         playAsset(nextIndex);
       }, duration);
@@ -403,17 +443,19 @@ export default function SignageApp() {
     [assets, clearAllTimers]
   );
 
-  // Retry logic
+  // Retry logic with exponential backoff
   const scheduleRetry = useCallback(() => {
     if (retryCount >= MAX_RETRIES) {
       setError(
-        "Max retries exceeded. Check network connection and device name configuration."
+        "Maximum retry attempts exceeded. Please check your network connection and device configuration."
       );
       return;
     }
 
-    const delay = Math.min(RETRY_DELAY * Math.pow(2, retryCount), 300000);
-    console.log(`Retry ${retryCount + 1}/${MAX_RETRIES} in ${delay / 1000}s`);
+    const delay = Math.min(RETRY_DELAY * Math.pow(2, retryCount), 300000); // Max 5 minutes
+    console.log(
+      `Scheduling retry ${retryCount + 1}/${MAX_RETRIES} in ${delay / 1000}s`
+    );
 
     retryTimer.current = setTimeout(() => {
       setRetryCount((prev) => prev + 1);
@@ -421,17 +463,22 @@ export default function SignageApp() {
     }, delay);
   }, [retryCount]);
 
-  // Pre-cache assets
+  // Pre-cache assets for better performance
   const preCacheAssets = useCallback(
     async (assets: Asset[]) => {
-      if (!networkStatus) return;
+      if (!networkStatus) {
+        console.log("Skipping pre-cache - no network");
+        return;
+      }
 
       console.log("Starting background asset pre-caching...");
 
+      // Cache first 5 assets to improve performance
       for (let i = 0; i < Math.min(assets.length, 5); i++) {
         const asset = assets[i];
         try {
           await getAssetPath(asset.filepath, asset.filetype);
+          // Small delay to prevent overwhelming the system
           await new Promise((resolve) => setTimeout(resolve, 100));
         } catch (error) {
           console.error(`Pre-cache failed for asset ${i}:`, error);
@@ -450,28 +497,34 @@ export default function SignageApp() {
       setError(null);
       clearAllTimers();
 
-      console.log("Initializing app...");
+      console.log("Starting app initialization...");
 
       const deviceName = await getDeviceName();
+      console.log(`Using device name: ${deviceName}`);
+
       const result = await fetchPlaylist(deviceName);
 
       if (result.hasChanged || assets.length === 0) {
+        console.log("Playlist updated, refreshing assets");
         setAssets(result.assets);
         setCurrentAssetIndex(0);
 
+        // Start playback with a small delay
         setTimeout(() => {
           playAsset(0);
         }, 100);
 
-        // Start pre-caching
+        // Start pre-caching after a delay
         setTimeout(() => preCacheAssets(result.assets), 2000);
+      } else {
+        console.log("Playlist unchanged, continuing with current assets");
       }
 
       setRetryCount(0);
       setIsLoading(false);
-      console.log("Initialization complete");
+      console.log("App initialization completed successfully");
     } catch (error) {
-      console.error("Init error:", error);
+      console.error("Initialization error:", error);
       setError(error instanceof Error ? error.message : String(error));
       setIsLoading(false);
       scheduleRetry();
@@ -486,31 +539,37 @@ export default function SignageApp() {
     preCacheAssets,
   ]);
 
-  // Periodic checks
+  // Periodic API checks
   const startPeriodicCheck = useCallback(() => {
     if (apiCheckTimer.current) {
       clearInterval(apiCheckTimer.current);
     }
 
     apiCheckTimer.current = setInterval(async () => {
-      if (!networkStatus || isLoading) return;
+      if (!networkStatus || isLoading) {
+        console.log("Skipping periodic check - no network or loading");
+        return;
+      }
 
       try {
+        console.log("Running periodic playlist check...");
         const periodicResult = await fetchPlaylist(deviceName);
 
-        if (
-          periodicResult.hasChanged &&
-          periodicResult.assets.length !== assets.length
-        ) {
-          console.log("Playlist changed significantly, restarting");
-          setAssets(periodicResult.assets);
-          setCurrentAssetIndex(0);
-          clearAllTimers();
-          setTimeout(() => playAsset(0), 100);
-          setTimeout(() => preCacheAssets(periodicResult.assets), 1000);
+        if (periodicResult.hasChanged) {
+          console.log("Playlist changed during periodic check");
+
+          if (periodicResult.assets.length !== assets.length) {
+            console.log("Asset count changed, restarting playback");
+            setAssets(periodicResult.assets);
+            setCurrentAssetIndex(0);
+            clearAllTimers();
+            setTimeout(() => playAsset(0), 100);
+            setTimeout(() => preCacheAssets(periodicResult.assets), 1000);
+          }
         }
       } catch (error) {
         console.error("Periodic check failed:", error);
+        // Don't show error UI for periodic failures, just log them
       }
     }, API_CHECK_INTERVAL);
   }, [
@@ -524,6 +583,7 @@ export default function SignageApp() {
     preCacheAssets,
   ]);
 
+  // WebView refresh for memory management
   const startWebViewRefresh = useCallback(() => {
     if (webViewRefreshTimer.current) {
       clearInterval(webViewRefreshTimer.current);
@@ -531,26 +591,33 @@ export default function SignageApp() {
 
     webViewRefreshTimer.current = setInterval(() => {
       console.log("Refreshing WebView for memory cleanup");
-      webViewRef.current?.reload();
+      if (webViewRef.current) {
+        webViewRef.current.reload();
+      }
     }, WEBVIEW_REFRESH_INTERVAL);
   }, []);
 
-  // Prevent back button
+  // Prevent back button from closing app (TV box behavior)
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
       "hardwareBackPress",
-      () => true
+      () => {
+        console.log("Back button pressed - preventing exit");
+        return true; // Prevent default behavior
+      }
     );
     return () => backHandler.remove();
   }, []);
 
-  // Initialize
+  // Initialize app on mount
   useEffect(() => {
+    console.log("Component mounted, starting initialization");
     initCacheDirectory().then(() => {
       initializeApp();
     });
 
     return () => {
+      console.log("Component unmounting, cleaning up");
       clearAllTimers();
       if (apiCheckTimer.current) clearInterval(apiCheckTimer.current);
       if (webViewRefreshTimer.current)
@@ -558,9 +625,10 @@ export default function SignageApp() {
     };
   }, []);
 
-  // Start periodic checks
+  // Start periodic checks when assets are loaded
   useEffect(() => {
     if (assets.length > 0 && !error) {
+      console.log("Starting periodic checks and WebView refresh");
       startPeriodicCheck();
       startWebViewRefresh();
     }
@@ -575,10 +643,32 @@ export default function SignageApp() {
   const AssetRenderer: React.FC<{ asset: Asset }> = ({ asset }) => {
     const { filepath, filetype } = asset;
     const [localPath, setLocalPath] = useState<string>(filepath);
+    const [loadError, setLoadError] = useState(false);
 
     useEffect(() => {
+      setLoadError(false);
       getAssetPath(filepath, filetype).then(setLocalPath);
     }, [filepath, filetype]);
+
+    const handleError = useCallback(() => {
+      console.error(`Asset load error: ${filepath}`);
+      setLoadError(true);
+
+      if (!loadError) {
+        // Try fallback to original URL if cached version failed
+        if (localPath !== filepath) {
+          console.log("Trying original URL as fallback");
+          setLocalPath(filepath);
+        } else {
+          // Skip to next asset if all attempts failed
+          console.log("Skipping to next asset due to load failure");
+          setTimeout(() => {
+            const nextIndex = (currentAssetIndex + 1) % assets.length;
+            setCurrentAssetIndex(nextIndex);
+          }, 1000);
+        }
+      }
+    }, [filepath, localPath, loadError, currentAssetIndex, assets.length]);
 
     if (filetype === "html" || filetype === "url") {
       const isLocal = localPath.startsWith("file://");
@@ -595,17 +685,18 @@ export default function SignageApp() {
           cacheEnabled={isLocal}
           incognito={!isLocal}
           androidLayerType="hardware"
-          onError={() => {
-            console.error("WebView error");
-            if (localPath !== filepath) {
-              setLocalPath(filepath);
-            } else {
-              const nextIndex = (currentAssetIndex + 1) % assets.length;
-              setCurrentAssetIndex(nextIndex);
-            }
+          mixedContentMode="compatibility"
+          allowsBackForwardNavigationGestures={false}
+          onError={handleError}
+          onHttpError={(syntheticEvent) => {
+            console.error("WebView HTTP error:", syntheticEvent.nativeEvent);
+            handleError();
           }}
           onLoadStart={() =>
             console.log("Loading:", isLocal ? "cached" : "remote", localPath)
+          }
+          onLoadEnd={() =>
+            console.log("Load completed:", isLocal ? "cached" : "remote")
           }
         />
       );
@@ -620,50 +711,58 @@ export default function SignageApp() {
             html: `<!DOCTYPE html>
               <html>
                 <head>
-                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
                   <style>
-                    * { margin: 0; padding: 0; }
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
                     body { 
-                      background: black; 
+                      background: #000; 
                       display: flex; 
                       justify-content: center; 
                       align-items: center; 
                       height: 100vh;
                       overflow: hidden;
+                      font-family: Arial, sans-serif;
                     }
                     img { 
                       max-width: 100vw; 
                       max-height: 100vh; 
                       object-fit: contain;
+                      display: block;
+                    }
+                    .error {
+                      color: white;
+                      text-align: center;
+                      font-size: 18px;
                     }
                   </style>
                 </head>
                 <body>
-                  <img src="${localPath}" alt="Signage" />
+                  <img src="${localPath}" alt="Signage Content" 
+                       onerror="this.style.display='none'; document.body.innerHTML='<div class=error>Image load failed</div>'" />
                 </body>
               </html>`,
           }}
           style={styles.webview}
-          javaScriptEnabled={false}
+          javaScriptEnabled={true}
           domStorageEnabled={false}
           cacheEnabled={isLocal}
           incognito={!isLocal}
-          onError={() => {
-            console.error("Image load error");
-            if (localPath !== filepath) {
-              setLocalPath(filepath);
-            } else {
-              const nextIndex = (currentAssetIndex + 1) % assets.length;
-              setCurrentAssetIndex(nextIndex);
-            }
-          }}
+          androidLayerType="hardware"
+          onError={handleError}
+          onLoadStart={() => console.log("Loading image:", localPath)}
         />
       );
     }
 
+    // Unsupported file type
     return (
       <View style={styles.centerContainer}>
-        <Text style={styles.unsupportedText}>Unsupported: {filetype}</Text>
+        <Text style={styles.unsupportedText}>
+          Unsupported file type: {filetype}
+        </Text>
+        <Text style={styles.unsupportedSubtext}>
+          {asset.name || "Unnamed asset"}
+        </Text>
       </View>
     );
   };
@@ -674,14 +773,14 @@ export default function SignageApp() {
       <View style={styles.container}>
         <StatusBar hidden />
         <View style={styles.centerContainer}>
-          <Text style={styles.loadingText}>Loading Signage...</Text>
+          <Text style={styles.loadingText}>Loading Digital Signage...</Text>
           <Text style={styles.deviceText}>Device: {deviceName}</Text>
           <Text style={styles.statusText}>
-            Network: {networkStatus ? "Connected" : "Disconnected"}
+            Network: {networkStatus ? "Connected ✓" : "Disconnected ✗"}
           </Text>
           {retryCount > 0 && (
             <Text style={styles.retryText}>
-              Retry: {retryCount}/{MAX_RETRIES}
+              Retry attempt: {retryCount}/{MAX_RETRIES}
             </Text>
           )}
         </View>
@@ -699,13 +798,16 @@ export default function SignageApp() {
           <Text style={styles.errorText}>{error}</Text>
           <Text style={styles.deviceText}>Device: {deviceName}</Text>
           <Text style={styles.statusText}>
-            Network: {networkStatus ? "Connected" : "Disconnected"}
+            Network: {networkStatus ? "Connected ✓" : "Disconnected ✗"}
           </Text>
           {retryCount < MAX_RETRIES && (
             <Text style={styles.retryText}>
               Retrying... ({retryCount + 1}/{MAX_RETRIES})
             </Text>
           )}
+          <Text style={styles.helpText}>
+            Check your network connection and device configuration
+          </Text>
         </View>
       </View>
     );
@@ -718,6 +820,9 @@ export default function SignageApp() {
         <StatusBar hidden />
         <View style={styles.centerContainer}>
           <Text style={styles.errorText}>No content available</Text>
+          <Text style={styles.helpText}>
+            Please check your playlist configuration
+          </Text>
         </View>
       </View>
     );
@@ -745,42 +850,52 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: "#ffffff",
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: "bold",
     textAlign: "center",
-    marginBottom: 16,
+    marginBottom: 20,
   },
   deviceText: {
     color: "#cccccc",
-    fontSize: 16,
+    fontSize: 18,
     textAlign: "center",
-    marginBottom: 8,
+    marginBottom: 12,
+    fontFamily: "monospace",
   },
   statusText: {
     color: "#888888",
-    fontSize: 14,
+    fontSize: 16,
     textAlign: "center",
-    marginBottom: 8,
+    marginBottom: 12,
   },
   retryText: {
     color: "#ffaa00",
-    fontSize: 14,
+    fontSize: 16,
     textAlign: "center",
-    marginTop: 8,
+    marginTop: 12,
+    fontWeight: "600",
   },
   errorTitle: {
     color: "#ff4444",
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: "bold",
     textAlign: "center",
-    marginBottom: 16,
+    marginBottom: 20,
   },
   errorText: {
     color: "#ff6666",
-    fontSize: 16,
+    fontSize: 18,
     textAlign: "center",
-    marginBottom: 16,
+    marginBottom: 20,
     paddingHorizontal: 20,
+    lineHeight: 24,
+  },
+  helpText: {
+    color: "#999999",
+    fontSize: 14,
+    textAlign: "center",
+    marginTop: 16,
+    fontStyle: "italic",
   },
   webview: {
     flex: 1,
@@ -788,7 +903,13 @@ const styles = StyleSheet.create({
   },
   unsupportedText: {
     color: "#ffffff",
-    fontSize: 20,
+    fontSize: 24,
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  unsupportedSubtext: {
+    color: "#cccccc",
+    fontSize: 16,
     textAlign: "center",
   },
 });
