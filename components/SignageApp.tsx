@@ -511,40 +511,65 @@ export default function SignageApp() {
     // Clear all timers first
     clearAllTimers();
 
-    // Use functional state update to ensure we get the latest values
-    setCurrentAssetIndex((currentIndex) => {
-      setAssets((currentAssets) => {
-        if (currentAssets.length === 0) {
-          console.error("No assets available for switching");
-          skipAssetRef.current = false;
-          return currentAssets;
-        }
+    // Use current assets length to calculate next index
+    const currentAssetsLength = assets.length;
+    if (currentAssetsLength === 0) {
+      console.error("❌ No assets available for switching");
+      skipAssetRef.current = false;
+      return;
+    }
 
-        const nextIndex = (currentIndex + 1) % currentAssets.length;
+    const nextIndex = (currentAssetIndex + 1) % currentAssetsLength;
+    console.log(
+      `➡️ Moving from asset ${currentAssetIndex + 1} to ${
+        nextIndex + 1
+      }/${currentAssetsLength}`
+    );
+
+    // Check if we're looping back to start
+    if (nextIndex === 0 && currentAssetIndex > 0) {
+      console.log("🔄 Looping back to first asset");
+    }
+
+    // Update the index
+    setCurrentAssetIndex(nextIndex);
+
+    // Start the next asset after a short delay
+    setTimeout(() => {
+      skipAssetRef.current = false;
+      if (assets.length > 0 && assets[nextIndex]) {
         console.log(
-          `➡️ Moving to asset ${nextIndex + 1}/${currentAssets.length}`
+          `🎬 Starting asset ${nextIndex + 1}: ${
+            assets[nextIndex].name || "Unnamed"
+          }`
         );
+        playAsset(nextIndex, assets);
+      } else {
+        console.error(`❌ Asset ${nextIndex} not found in assets array`);
+      }
+    }, 50);
+  }, [currentAssetIndex, assets, clearAllTimers]);
 
-        // Start the next asset after a short delay
-        setTimeout(() => {
-          skipAssetRef.current = false;
-          playAsset(nextIndex, currentAssets);
-        }, 50);
-
-        return currentAssets;
-      });
-
-      return (currentIndex + 1) % assets.length;
-    });
-  }, [clearAllTimers, assets.length]);
-
-  // Asset playback - modified to accept assets array directly
+  // Asset playbook - simplified and more reliable
   const playAsset = useCallback(
     (assetIndex: number, assetsArray?: Asset[]) => {
       const currentAssets = assetsArray || assets;
 
+      console.log(
+        `🎯 playAsset called with index ${assetIndex}, assets length: ${currentAssets.length}`
+      );
+
+      if (currentAssets.length === 0) {
+        console.error("❌ No assets available");
+        return;
+      }
+
       if (!currentAssets[assetIndex]) {
-        console.error(`Asset at index ${assetIndex} not found`);
+        console.error(
+          `❌ Asset at index ${assetIndex} not found. Available indices: 0-${
+            currentAssets.length - 1
+          }`
+        );
         return;
       }
 
@@ -606,29 +631,42 @@ export default function SignageApp() {
     }, delay);
   }, [retryCount]);
 
-  // Pre-cache assets for better performance
-  const preCacheAssets = useCallback(
+  // Pre-cache ALL assets for better reliability
+  const preCacheAllAssets = useCallback(
     async (assets: Asset[]) => {
       if (!networkStatus) {
-        console.log("Skipping pre-cache - no network");
+        console.log("⚠️ Skipping pre-cache - no network");
         return;
       }
 
-      console.log("Starting background asset pre-caching...");
+      console.log(`📥 Starting pre-cache of ALL ${assets.length} assets...`);
+      let successCount = 0;
+      let errorCount = 0;
 
-      // Cache first 5 assets to improve performance
-      for (let i = 0; i < Math.min(assets.length, 5); i++) {
+      for (let i = 0; i < assets.length; i++) {
         const asset = assets[i];
         try {
+          console.log(
+            `📥 Pre-caching asset ${i + 1}/${assets.length}: ${
+              asset.name || "Unnamed"
+            }`
+          );
           await getAssetPath(asset.filepath, asset.filetype);
+          successCount++;
+          console.log(`✅ Successfully cached asset ${i + 1}`);
+
           // Small delay to prevent overwhelming the system
-          await new Promise((resolve) => setTimeout(resolve, 100));
+          await new Promise((resolve) => setTimeout(resolve, 200));
         } catch (error) {
-          console.error(`Pre-cache failed for asset ${i}:`, error);
+          errorCount++;
+          console.error(`❌ Pre-cache failed for asset ${i + 1}:`, error);
+          // Continue with other assets even if one fails
         }
       }
 
-      console.log("Pre-caching completed");
+      console.log(
+        `📥 Pre-caching completed: ${successCount} success, ${errorCount} errors`
+      );
     },
     [networkStatus, getAssetPath]
   );
@@ -640,34 +678,39 @@ export default function SignageApp() {
       setError(null);
       clearAllTimers();
 
-      console.log("Starting app initialization...");
+      console.log("🚀 Starting app initialization...");
 
       const deviceName = await getDeviceName();
-      console.log(`Using device name: ${deviceName}`);
+      console.log(`📱 Using device name: ${deviceName}`);
 
       const result = await fetchPlaylist(deviceName);
 
       if (result.hasChanged || assets.length === 0) {
-        console.log("Playlist updated, refreshing assets");
+        console.log("🔄 Playlist updated, refreshing assets");
+        console.log(`📋 Found ${result.assets.length} assets to load`);
+
+        // Update assets state
         setAssets(result.assets);
         setCurrentAssetIndex(0);
 
+        // Pre-cache ALL assets before starting playback
+        console.log("📥 Pre-caching all assets before starting playback...");
+        await preCacheAllAssets(result.assets);
+
+        console.log("🎬 Starting playback with fully cached assets");
         // Start playback with the new assets array
         setTimeout(() => {
           playAsset(0, result.assets);
         }, 100);
-
-        // Start pre-caching after a delay
-        setTimeout(() => preCacheAssets(result.assets), 2000);
       } else {
-        console.log("Playlist unchanged, continuing with current assets");
+        console.log("✅ Playlist unchanged, continuing with current assets");
       }
 
       setRetryCount(0);
       setIsLoading(false);
-      console.log("App initialization completed successfully");
+      console.log("🎉 App initialization completed successfully");
     } catch (error) {
-      console.error("Initialization error:", error);
+      console.error("💥 Initialization error:", error);
       setError(error instanceof Error ? error.message : String(error));
       setIsLoading(false);
       scheduleRetry();
@@ -679,7 +722,7 @@ export default function SignageApp() {
     clearAllTimers,
     playAsset,
     scheduleRetry,
-    preCacheAssets,
+    preCacheAllAssets,
   ]);
 
   // Periodic API checks
@@ -706,8 +749,9 @@ export default function SignageApp() {
             setAssets(periodicResult.assets);
             setCurrentAssetIndex(0);
             clearAllTimers();
+            // Pre-cache all assets before restarting
+            await preCacheAllAssets(periodicResult.assets);
             setTimeout(() => playAsset(0, periodicResult.assets), 100);
-            setTimeout(() => preCacheAssets(periodicResult.assets), 1000);
           }
         }
       } catch (error) {
@@ -723,7 +767,7 @@ export default function SignageApp() {
     assets.length,
     clearAllTimers,
     playAsset,
-    preCacheAssets,
+    preCacheAllAssets,
   ]);
 
   // WebView refresh for memory management
@@ -1451,12 +1495,24 @@ export default function SignageApp() {
   }
 
   const currentAsset = assets[currentAssetIndex];
+  console.log(
+    `🎯 Rendering check - currentAssetIndex: ${currentAssetIndex}, assets.length: ${assets.length}`
+  );
+  console.log(`🎯 Current asset exists: ${!!currentAsset}`);
+
   if (!currentAsset) {
+    console.error(
+      `❌ No asset found at index ${currentAssetIndex}. Assets available:`,
+      assets.map((a, i) => `${i}: ${a.name || "Unnamed"}`)
+    );
     return (
       <View style={styles.container}>
         <StatusBar hidden />
         <View style={styles.centerContainer}>
           <Text style={styles.errorText}>No content available</Text>
+          <Text style={styles.helpText}>
+            Asset index: {currentAssetIndex}, Assets length: {assets.length}
+          </Text>
           <Text style={styles.helpText}>
             Please check your playlist configuration
           </Text>
