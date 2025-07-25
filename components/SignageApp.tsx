@@ -483,15 +483,15 @@ export default function SignageApp() {
       const remaining = Math.max(0, duration - elapsed);
       setRemainingTime(remaining);
 
-      // Log every 5 seconds or when less than 10 seconds remain
-      if (remaining % 5 === 0 || remaining <= 10) {
+      // Log every 10 seconds or when less than 10 seconds remain
+      if (remaining % 10 === 0 || (remaining <= 10 && remaining > 0)) {
         console.log(
           `⏰ Countdown: ${remaining}s remaining (elapsed: ${elapsed}s)`
         );
       }
 
       if (remaining <= 0) {
-        console.log(`🔔 Countdown finished!`);
+        console.log(`🔔 Countdown finished! Should be switching soon...`);
         clearInterval(countdownTimer.current!);
         countdownTimer.current = null;
       }
@@ -508,36 +508,51 @@ export default function SignageApp() {
     skipAssetRef.current = true;
     console.log("⏭️ Skipping to next asset");
 
-    // Clear all timers
+    // Clear all timers first
     clearAllTimers();
 
-    // Calculate next index
-    const nextIndex = (currentAssetIndex + 1) % assets.length;
-    console.log(`➡️ Moving to asset ${nextIndex + 1}/${assets.length}`);
+    // Use functional state update to ensure we get the latest values
+    setCurrentAssetIndex((currentIndex) => {
+      setAssets((currentAssets) => {
+        if (currentAssets.length === 0) {
+          console.error("No assets available for switching");
+          skipAssetRef.current = false;
+          return currentAssets;
+        }
 
-    // Update state and start next asset
-    setCurrentAssetIndex(nextIndex);
+        const nextIndex = (currentIndex + 1) % currentAssets.length;
+        console.log(
+          `➡️ Moving to asset ${nextIndex + 1}/${currentAssets.length}`
+        );
 
-    // Small delay to ensure state updates, then reset skip flag and play
-    setTimeout(() => {
-      skipAssetRef.current = false;
-      playAsset(nextIndex);
-    }, 100);
-  }, [currentAssetIndex, assets.length, clearAllTimers]);
+        // Start the next asset after a short delay
+        setTimeout(() => {
+          skipAssetRef.current = false;
+          playAsset(nextIndex, currentAssets);
+        }, 50);
 
-  // Asset playback
+        return currentAssets;
+      });
+
+      return (currentIndex + 1) % assets.length;
+    });
+  }, [clearAllTimers, assets.length]);
+
+  // Asset playback - modified to accept assets array directly
   const playAsset = useCallback(
-    (assetIndex: number) => {
-      if (!assets[assetIndex]) {
+    (assetIndex: number, assetsArray?: Asset[]) => {
+      const currentAssets = assetsArray || assets;
+
+      if (!currentAssets[assetIndex]) {
         console.error(`Asset at index ${assetIndex} not found`);
         return;
       }
 
-      const asset = assets[assetIndex];
+      const asset = currentAssets[assetIndex];
       const duration = asset.time * 1000; // Convert to milliseconds
 
       console.log(
-        `🎬 Playing asset ${assetIndex + 1}/${assets.length}: ${
+        `🎬 Playing asset ${assetIndex + 1}/${currentAssets.length}: ${
           asset.name || "Unnamed"
         } (${asset.filetype}) for ${asset.time}s (${duration}ms)`
       );
@@ -560,6 +575,7 @@ export default function SignageApp() {
         console.log(
           `⏱️ Timer fired after ${actualDuration}ms (expected ${duration}ms)`
         );
+        console.log(`🔥 Timer callback executing - moving to next asset`);
 
         // Skip to next asset
         skipToNextAsset();
@@ -636,9 +652,9 @@ export default function SignageApp() {
         setAssets(result.assets);
         setCurrentAssetIndex(0);
 
-        // Start playback with a small delay
+        // Start playback with the new assets array
         setTimeout(() => {
-          playAsset(0);
+          playAsset(0, result.assets);
         }, 100);
 
         // Start pre-caching after a delay
@@ -690,7 +706,7 @@ export default function SignageApp() {
             setAssets(periodicResult.assets);
             setCurrentAssetIndex(0);
             clearAllTimers();
-            setTimeout(() => playAsset(0), 100);
+            setTimeout(() => playAsset(0, periodicResult.assets), 100);
             setTimeout(() => preCacheAssets(periodicResult.assets), 1000);
           }
         }
@@ -750,7 +766,7 @@ export default function SignageApp() {
       if (webViewRefreshTimer.current)
         clearInterval(webViewRefreshTimer.current);
     };
-  }, []);
+  }, []); // Empty dependency array to run only on mount
 
   // Start periodic checks when assets are loaded
   useEffect(() => {
@@ -765,6 +781,16 @@ export default function SignageApp() {
         clearInterval(webViewRefreshTimer.current);
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
+
+  // Debug effect to monitor currentAssetIndex changes
+  useEffect(() => {
+    console.log(`📍 Current asset index changed to: ${currentAssetIndex}`);
+    if (assets.length > 0 && assets[currentAssetIndex]) {
+      console.log(
+        `📍 Current asset: ${assets[currentAssetIndex].name || "Unnamed"}`
+      );
+    }
+  }, [currentAssetIndex, assets]);
 
   // Asset rendering component
   const AssetRenderer: React.FC<{ asset: Asset }> = ({ asset }) => {
