@@ -52,14 +52,13 @@ interface ApiResponse {
   }>;
 }
 
-// Move AssetRenderer outside and memoize it to prevent recreating on every render
+// FIXED: Move AssetRenderer outside and memoize it properly with stable props
 const AssetRenderer = memo<{
   asset: Asset;
   currentAssetIndex: number;
   totalAssets: number;
-  remainingTime: number;
   onError: () => void;
-}>(({ asset, currentAssetIndex, totalAssets, remainingTime, onError }) => {
+}>(({ asset, currentAssetIndex, totalAssets, onError }) => {
   const { filepath, filetype } = asset;
   const [localPath, setLocalPath] = useState<string>(filepath);
   const [loadError, setLoadError] = useState(false);
@@ -269,14 +268,11 @@ const AssetRenderer = memo<{
           }}
         />
 
-        {/* Debug overlay for development */}
+        {/* Debug overlay for development - REMOVED remainingTime to prevent flickering */}
         {process.env.NODE_ENV === "development" && (
           <View style={styles.debugOverlay}>
             <Text style={styles.debugText}>
               Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
-            <Text style={styles.debugText}>
-              Time: {remainingTime}s remaining
             </Text>
             <Text style={styles.debugText}>
               Type:{" "}
@@ -339,14 +335,11 @@ const AssetRenderer = memo<{
           </View>
         )}
 
-        {/* Debug overlay for development */}
+        {/* Debug overlay for development - REMOVED remainingTime */}
         {process.env.NODE_ENV === "development" && (
           <View style={styles.debugOverlay}>
             <Text style={styles.debugText}>
               Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
-            <Text style={styles.debugText}>
-              Time: {remainingTime}s remaining
             </Text>
           </View>
         )}
@@ -359,13 +352,15 @@ const AssetRenderer = memo<{
     filetype === "mp4" ||
     filetype === "m3u8" ||
     filetype === "hls" ||
-    filetype === "livestream"
+    filetype === "livestream" ||
+    filetype === "stream"
   ) {
     const isLocal = localPath.startsWith("file://");
     const isLivestream =
       filetype === "m3u8" ||
       filetype === "hls" ||
       filetype === "livestream" ||
+      filetype === "stream" ||
       localPath.includes(".m3u8") ||
       localPath.includes("rtmp://") ||
       localPath.includes("rtsp://") ||
@@ -651,14 +646,11 @@ const AssetRenderer = memo<{
           }}
         />
 
-        {/* Debug overlay for development */}
+        {/* Debug overlay for development - REMOVED remainingTime */}
         {process.env.NODE_ENV === "development" && (
           <View style={styles.debugOverlay}>
             <Text style={styles.debugText}>
               Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
-            <Text style={styles.debugText}>
-              Time: {remainingTime}s remaining
             </Text>
             <Text style={styles.debugText}>
               Type: {isLivestream ? "📡 Livestream" : "📹 Video"}
@@ -697,8 +689,6 @@ export default function SignageApp() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [networkStatus, setNetworkStatus] = useState(true);
   const [retryCount, setRetryCount] = useState(0);
-  const [currentAssetStartTime, setCurrentAssetStartTime] = useState<number>(0);
-  const [remainingTime, setRemainingTime] = useState<number>(0);
 
   // Refs - Fixed timer types for React Native
   const playbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -707,7 +697,6 @@ export default function SignageApp() {
   const webViewRefreshTimer = useRef<ReturnType<typeof setInterval> | null>(
     null
   );
-  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
@@ -887,60 +876,23 @@ export default function SignageApp() {
     [networkStatus, initCacheDirectory]
   );
 
-  // Timer cleanup - Fixed for React Native
+  // FIXED: Simplified timer cleanup
   const clearAllTimers = useCallback(() => {
     console.log(`🧹 Clearing all timers...`);
 
     if (playbackTimer.current) {
-      console.log(`❌ Clearing playback timer:`, playbackTimer.current);
+      console.log(`❌ Clearing playback timer`);
       clearTimeout(playbackTimer.current);
       playbackTimer.current = null;
     }
     if (retryTimer.current) {
-      console.log(`❌ Clearing retry timer:`, retryTimer.current);
+      console.log(`❌ Clearing retry timer`);
       clearTimeout(retryTimer.current);
       retryTimer.current = null;
     }
-    if (countdownTimer.current) {
-      console.log(`❌ Clearing countdown timer:`, countdownTimer.current);
-      clearInterval(countdownTimer.current);
-      countdownTimer.current = null;
-    }
   }, []);
 
-  // Countdown timer for debugging
-  const startCountdown = useCallback((duration: number) => {
-    const startTime = Date.now();
-    setCurrentAssetStartTime(startTime);
-    setRemainingTime(duration);
-
-    console.log(`⏳ Starting countdown: ${duration}s`);
-
-    if (countdownTimer.current) {
-      clearInterval(countdownTimer.current);
-    }
-
-    countdownTimer.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const remaining = Math.max(0, duration - elapsed);
-      setRemainingTime(remaining);
-
-      // Log every 10 seconds or when less than 10 seconds remain
-      if (remaining % 10 === 0 || (remaining <= 10 && remaining > 0)) {
-        console.log(
-          `⏰ Countdown: ${remaining}s remaining (elapsed: ${elapsed}s)`
-        );
-      }
-
-      if (remaining <= 0) {
-        console.log(`🔔 Countdown finished! Should be switching soon...`);
-        clearInterval(countdownTimer.current!);
-        countdownTimer.current = null;
-      }
-    }, 1000);
-  }, []);
-
-  // FIXED: Simplified asset switching function
+  // FIXED: Completely rewritten asset switching without countdown timer
   const switchToNextAsset = useCallback(() => {
     if (isTransitioning.current) {
       console.log("⏭️ Transition already in progress, ignoring");
@@ -955,7 +907,7 @@ export default function SignageApp() {
     isTransitioning.current = true;
     console.log("⏭️ Switching to next asset");
 
-    // Clear all timers first
+    // Clear existing timer
     clearAllTimers();
 
     // Calculate next index
@@ -966,43 +918,40 @@ export default function SignageApp() {
       }`
     );
 
-    // Update the index
+    // Update the index immediately
     setCurrentAssetIndex(nextIndex);
 
-    // Allow transition after a brief moment and start new timer
+    // Schedule the next transition
+    const nextAsset = assets[nextIndex];
+    if (nextAsset) {
+      const duration = nextAsset.time * 1000;
+
+      console.log(
+        `🎬 Asset ${nextIndex + 1}/${assets.length}: ${
+          nextAsset.name || "Unnamed"
+        } (${nextAsset.filetype}) will play for ${nextAsset.time}s`
+      );
+
+      // Set timer for next switch (no countdown, just the switch)
+      playbackTimer.current = setTimeout(() => {
+        console.log(`⏱️ Timer finished for asset ${nextIndex + 1}`);
+        isTransitioning.current = false;
+        switchToNextAsset();
+      }, duration);
+    }
+
+    // Reset transition flag after a brief delay
     setTimeout(() => {
       isTransitioning.current = false;
-
-      // Start the timer for the new asset
-      if (assets[nextIndex]) {
-        const asset = assets[nextIndex];
-        const duration = asset.time * 1000; // Convert to milliseconds
-
-        console.log(
-          `🎬 Starting playback for asset ${nextIndex + 1}/${assets.length}: ${
-            asset.name || "Unnamed"
-          } (${asset.filetype}) for ${asset.time}s`
-        );
-
-        // Start countdown for debugging
-        startCountdown(asset.time);
-
-        // Set the playback timer
-        console.log(`⏰ Setting timer for ${duration}ms`);
-        playbackTimer.current = setTimeout(() => {
-          console.log(`⏱️ Timer finished - switching to next asset`);
-          switchToNextAsset();
-        }, duration);
-
-        console.log(`✅ Playback timer set for asset ${nextIndex + 1}`);
-      }
-    }, 500); // Give a bit more time for the component to render
-  }, [currentAssetIndex, assets, clearAllTimers, startCountdown]);
+    }, 500);
+  }, [currentAssetIndex, assets, clearAllTimers]);
 
   // Handle asset rendering errors
   const handleAssetError = useCallback(() => {
     console.log("🚨 Asset error reported, switching to next asset");
-    switchToNextAsset();
+    setTimeout(() => {
+      switchToNextAsset();
+    }, 1000);
   }, [switchToNextAsset]);
 
   // Network monitoring
@@ -1208,47 +1157,63 @@ export default function SignageApp() {
     [networkStatus, isAssetCached, downloadAndCacheAsset]
   );
 
-  // Pre-cache ALL assets for better reliability
-  const preCacheAllAssets = useCallback(
+  // Pre-cache assets (but don't wait for all to complete)
+  const preCacheAssets = useCallback(
     async (assets: Asset[]) => {
       if (!networkStatus) {
         console.log("⚠️ Skipping pre-cache - no network");
         return;
       }
 
-      console.log(`📥 Starting pre-cache of ALL ${assets.length} assets...`);
-      let successCount = 0;
-      let errorCount = 0;
+      console.log(
+        `📥 Starting background pre-cache of ${assets.length} assets...`
+      );
 
-      for (let i = 0; i < assets.length; i++) {
-        const asset = assets[i];
+      // Cache first 3 assets immediately, then cache others in background
+      const priorityAssets = assets.slice(0, 3);
+      const backgroundAssets = assets.slice(3);
+
+      // Cache priority assets
+      for (let i = 0; i < priorityAssets.length; i++) {
+        const asset = priorityAssets[i];
         try {
           console.log(
-            `📥 Pre-caching asset ${i + 1}/${assets.length}: ${
-              asset.name || "Unnamed"
-            }`
+            `📥 Priority caching asset ${i + 1}: ${asset.name || "Unnamed"}`
           );
           await getAssetPath(asset.filepath, asset.filetype);
-          successCount++;
-          console.log(`✅ Successfully cached asset ${i + 1}`);
-
-          // Small delay to prevent overwhelming the system
-          await new Promise((resolve) => setTimeout(resolve, 200));
         } catch (error) {
-          errorCount++;
-          console.error(`❌ Pre-cache failed for asset ${i + 1}:`, error);
-          // Continue with other assets even if one fails
+          console.error(`❌ Priority cache failed for asset ${i + 1}:`, error);
         }
       }
 
-      console.log(
-        `📥 Pre-caching completed: ${successCount} success, ${errorCount} errors`
-      );
+      // Cache background assets without blocking
+      if (backgroundAssets.length > 0) {
+        setTimeout(async () => {
+          for (let i = 0; i < backgroundAssets.length; i++) {
+            const asset = backgroundAssets[i];
+            try {
+              console.log(
+                `📥 Background caching asset ${i + 4}: ${
+                  asset.name || "Unnamed"
+                }`
+              );
+              await getAssetPath(asset.filepath, asset.filetype);
+              // Small delay to prevent overwhelming
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            } catch (error) {
+              console.error(
+                `❌ Background cache failed for asset ${i + 4}:`,
+                error
+              );
+            }
+          }
+        }, 2000);
+      }
     },
     [networkStatus, getAssetPath]
   );
 
-  // FIXED: Main initialization
+  // FIXED: Simplified initialization
   const initializeApp = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -1266,17 +1231,14 @@ export default function SignageApp() {
         console.log("🔄 Playlist updated, refreshing assets");
         console.log(`📋 Found ${result.assets.length} assets to load`);
 
-        // Update assets state
+        // Update assets state first
         setAssets(result.assets);
         setCurrentAssetIndex(0);
 
-        // Pre-cache ALL assets before starting playback
-        console.log("📥 Pre-caching all assets before starting playback...");
-        await preCacheAllAssets(result.assets);
+        // Start background caching (non-blocking)
+        preCacheAssets(result.assets);
 
-        console.log("🎬 Starting playback with fully cached assets");
-
-        // Start the first asset's timer
+        // Start playback immediately
         if (result.assets.length > 0) {
           const firstAsset = result.assets[0];
           const duration = firstAsset.time * 1000;
@@ -1286,9 +1248,6 @@ export default function SignageApp() {
               firstAsset.time
             }s`
           );
-
-          // Start countdown
-          startCountdown(firstAsset.time);
 
           // Set timer for first asset
           playbackTimer.current = setTimeout(() => {
@@ -1310,7 +1269,6 @@ export default function SignageApp() {
               }`
             );
 
-            startCountdown(currentAsset.time);
             playbackTimer.current = setTimeout(() => {
               console.log(`⏱️ Restarted timer finished`);
               switchToNextAsset();
@@ -1335,8 +1293,7 @@ export default function SignageApp() {
     currentAssetIndex,
     clearAllTimers,
     scheduleRetry,
-    preCacheAllAssets,
-    startCountdown,
+    preCacheAssets,
     switchToNextAsset,
   ]);
 
@@ -1365,15 +1322,14 @@ export default function SignageApp() {
             setCurrentAssetIndex(0);
             clearAllTimers();
 
-            // Pre-cache all assets before restarting
-            await preCacheAllAssets(periodicResult.assets);
+            // Background cache new assets
+            preCacheAssets(periodicResult.assets);
 
             // Start first asset
             if (periodicResult.assets.length > 0) {
               const firstAsset = periodicResult.assets[0];
               const duration = firstAsset.time * 1000;
 
-              startCountdown(firstAsset.time);
               playbackTimer.current = setTimeout(() => {
                 switchToNextAsset();
               }, duration);
@@ -1392,8 +1348,7 @@ export default function SignageApp() {
     fetchPlaylist,
     assets.length,
     clearAllTimers,
-    preCacheAllAssets,
-    startCountdown,
+    preCacheAssets,
     switchToNextAsset,
   ]);
 
@@ -1451,15 +1406,7 @@ export default function SignageApp() {
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
 
-  // Debug effect to monitor currentAssetIndex changes
-  useEffect(() => {
-    console.log(`📍 Current asset index changed to: ${currentAssetIndex}`);
-    if (assets.length > 0 && assets[currentAssetIndex]) {
-      console.log(
-        `📍 Current asset: ${assets[currentAssetIndex].name || "Unnamed"}`
-      );
-    }
-  }, [currentAssetIndex, assets]);
+  // REMOVED: Debug effect that was causing unnecessary re-renders
 
   // Loading screen
   if (isLoading) {
@@ -1508,10 +1455,6 @@ export default function SignageApp() {
   }
 
   const currentAsset = assets[currentAssetIndex];
-  console.log(
-    `🎯 Rendering check - currentAssetIndex: ${currentAssetIndex}, assets.length: ${assets.length}`
-  );
-  console.log(`🎯 Current asset exists: ${!!currentAsset}`);
 
   if (!currentAsset) {
     console.error(
@@ -1538,10 +1481,10 @@ export default function SignageApp() {
     <View style={styles.container}>
       <StatusBar hidden />
       <AssetRenderer
+        key={`${currentAssetIndex}-${currentAsset.filepath}`} // FIXED: Add stable key
         asset={currentAsset}
         currentAssetIndex={currentAssetIndex}
         totalAssets={assets.length}
-        remainingTime={remainingTime}
         onError={handleAssetError}
       />
     </View>
