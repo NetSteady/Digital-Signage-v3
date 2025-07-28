@@ -24,7 +24,6 @@ const MAX_RETRIES = 5;
 const WEBVIEW_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
 const MIN_ASSET_TIME = 5; // Minimum 5 seconds for any asset
-const MAX_ASSET_TIME = 300; // Maximum 5 minutes for debugging (remove in production)
 
 // Get screen dimensions
 const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
@@ -267,44 +266,6 @@ const AssetRenderer = memo<{
             console.log("🧭 Navigation:", navState.url);
           }}
         />
-
-        {/* Debug overlay for development - REMOVED remainingTime to prevent flickering */}
-        {process.env.NODE_ENV === "development" && (
-          <View style={styles.debugOverlay}>
-            <Text style={styles.debugText}>
-              Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
-            <Text style={styles.debugText}>
-              Type:{" "}
-              {isLivestream ? "📡 Stream" : isLocal ? "💾 Cached" : "🌐 Remote"}
-            </Text>
-            <Text style={styles.debugText}>
-              Platform:{" "}
-              {filepath.includes("twitch.tv")
-                ? "Twitch"
-                : filepath.includes("youtube.com")
-                ? "YouTube"
-                : filepath.includes("facebook.com")
-                ? "Facebook"
-                : filepath.includes("instagram.com")
-                ? "Instagram"
-                : filepath.includes("webrtc.html")
-                ? "WebRTC"
-                : "Web"}
-            </Text>
-            <Text style={styles.debugText}>
-              URL:{" "}
-              {localPath.length > 35
-                ? localPath.substring(0, 35) + "..."
-                : localPath}
-            </Text>
-            {connectionError && (
-              <Text style={styles.errorDebugText}>
-                Error: {connectionError}
-              </Text>
-            )}
-          </View>
-        )}
       </View>
     );
   }
@@ -332,15 +293,6 @@ const AssetRenderer = memo<{
           <View style={styles.errorOverlay}>
             <Text style={styles.errorText}>Image Load Failed</Text>
             <Text style={styles.errorSubtext}>{asset.name || filepath}</Text>
-          </View>
-        )}
-
-        {/* Debug overlay for development - REMOVED remainingTime */}
-        {process.env.NODE_ENV === "development" && (
-          <View style={styles.debugOverlay}>
-            <Text style={styles.debugText}>
-              Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
           </View>
         )}
       </View>
@@ -611,7 +563,7 @@ const AssetRenderer = memo<{
           androidLayerType="hardware"
           mixedContentMode="always"
           originWhitelist={["*"]}
-          allowsInlineMediaPlayback={true}
+          allowsInlineMediaPlaybook={true}
           mediaPlaybackRequiresUserAction={false}
           startInLoadingState={false}
           onError={(error) => {
@@ -645,24 +597,6 @@ const AssetRenderer = memo<{
             }
           }}
         />
-
-        {/* Debug overlay for development - REMOVED remainingTime */}
-        {process.env.NODE_ENV === "development" && (
-          <View style={styles.debugOverlay}>
-            <Text style={styles.debugText}>
-              Asset: {currentAssetIndex + 1}/{totalAssets}
-            </Text>
-            <Text style={styles.debugText}>
-              Type: {isLivestream ? "📡 Livestream" : "📹 Video"}
-            </Text>
-            <Text style={styles.debugText}>
-              Format: {filetype.toUpperCase()}
-            </Text>
-            <Text style={styles.debugText}>
-              Source: {isLocal ? "Local" : "Remote"}
-            </Text>
-          </View>
-        )}
       </View>
     );
   }
@@ -842,15 +776,6 @@ export default function SignageApp() {
             let time = parseInt(asset.time);
             time = Math.max(time, MIN_ASSET_TIME);
 
-            if (process.env.NODE_ENV === "development") {
-              time = Math.min(time, MAX_ASSET_TIME);
-              console.log(
-                `Asset ${asset.name || asset.filepath}: Original time ${
-                  asset.time
-                }s, Using ${time}s`
-              );
-            }
-
             return {
               filepath: asset.filepath,
               filetype: asset.filetype.toLowerCase(),
@@ -876,19 +801,14 @@ export default function SignageApp() {
     [networkStatus, initCacheDirectory]
   );
 
-  // FIXED: Simplified timer cleanup
-  const clearAllTimers = useCallback(() => {
-    console.log(`🧹 Clearing all timers...`);
+  // FIXED: Simplified timer cleanup - only clear playback timer
+  const clearPlaybackTimer = useCallback(() => {
+    console.log(`🧹 Clearing playback timer...`);
 
     if (playbackTimer.current) {
       console.log(`❌ Clearing playback timer`);
       clearTimeout(playbackTimer.current);
       playbackTimer.current = null;
-    }
-    if (retryTimer.current) {
-      console.log(`❌ Clearing retry timer`);
-      clearTimeout(retryTimer.current);
-      retryTimer.current = null;
     }
   }, []);
 
@@ -907,9 +827,6 @@ export default function SignageApp() {
     isTransitioning.current = true;
     console.log("⏭️ Switching to next asset");
 
-    // Clear existing timer
-    clearAllTimers();
-
     // Calculate next index
     const nextIndex = (currentAssetIndex + 1) % assets.length;
     console.log(
@@ -917,6 +834,13 @@ export default function SignageApp() {
         assets.length
       }`
     );
+
+    // Clear ONLY the playback timer (not all timers)
+    if (playbackTimer.current) {
+      console.log(`❌ Clearing current playback timer`);
+      clearTimeout(playbackTimer.current);
+      playbackTimer.current = null;
+    }
 
     // Update the index immediately
     setCurrentAssetIndex(nextIndex);
@@ -932,19 +856,19 @@ export default function SignageApp() {
         } (${nextAsset.filetype}) will play for ${nextAsset.time}s`
       );
 
-      // Set timer for next switch (no countdown, just the switch)
+      // Set timer for next switch - DO NOT clear timers inside this setTimeout
       playbackTimer.current = setTimeout(() => {
         console.log(`⏱️ Timer finished for asset ${nextIndex + 1}`);
         isTransitioning.current = false;
-        switchToNextAsset();
+        switchToNextAsset(); // Recursive call for next asset
       }, duration);
     }
 
     // Reset transition flag after a brief delay
     setTimeout(() => {
       isTransitioning.current = false;
-    }, 500);
-  }, [currentAssetIndex, assets, clearAllTimers]);
+    }, 100);
+  }, [currentAssetIndex, assets]);
 
   // Handle asset rendering errors
   const handleAssetError = useCallback(() => {
@@ -1218,7 +1142,7 @@ export default function SignageApp() {
     try {
       setIsLoading(true);
       setError(null);
-      clearAllTimers();
+      clearPlaybackTimer();
 
       console.log("🚀 Starting app initialization...");
 
@@ -1249,9 +1173,13 @@ export default function SignageApp() {
             }s`
           );
 
+          // Reset transition flag
+          isTransitioning.current = false;
+
           // Set timer for first asset
           playbackTimer.current = setTimeout(() => {
             console.log(`⏱️ First asset timer finished`);
+            isTransitioning.current = false;
             switchToNextAsset();
           }, duration);
         }
@@ -1266,11 +1194,15 @@ export default function SignageApp() {
             console.log(
               `🔄 Restarting current asset timer: ${
                 currentAsset.name || "Unnamed"
-              }`
+              } for ${currentAsset.time}s`
             );
+
+            // Reset transition flag
+            isTransitioning.current = false;
 
             playbackTimer.current = setTimeout(() => {
               console.log(`⏱️ Restarted timer finished`);
+              isTransitioning.current = false;
               switchToNextAsset();
             }, duration);
           }
@@ -1291,7 +1223,7 @@ export default function SignageApp() {
     fetchPlaylist,
     assets.length,
     currentAssetIndex,
-    clearAllTimers,
+    clearPlaybackTimer,
     scheduleRetry,
     preCacheAssets,
     switchToNextAsset,
@@ -1320,7 +1252,7 @@ export default function SignageApp() {
             console.log("Asset count changed, restarting playback");
             setAssets(periodicResult.assets);
             setCurrentAssetIndex(0);
-            clearAllTimers();
+            clearPlaybackTimer();
 
             // Background cache new assets
             preCacheAssets(periodicResult.assets);
@@ -1329,6 +1261,8 @@ export default function SignageApp() {
             if (periodicResult.assets.length > 0) {
               const firstAsset = periodicResult.assets[0];
               const duration = firstAsset.time * 1000;
+
+              isTransitioning.current = false;
 
               playbackTimer.current = setTimeout(() => {
                 switchToNextAsset();
@@ -1347,7 +1281,7 @@ export default function SignageApp() {
     isLoading,
     fetchPlaylist,
     assets.length,
-    clearAllTimers,
+    clearPlaybackTimer,
     preCacheAssets,
     switchToNextAsset,
   ]);
@@ -1385,7 +1319,7 @@ export default function SignageApp() {
 
     return () => {
       console.log("Component unmounting, cleaning up");
-      clearAllTimers();
+      clearPlaybackTimer();
       if (apiCheckTimer.current) clearInterval(apiCheckTimer.current);
       if (webViewRefreshTimer.current)
         clearInterval(webViewRefreshTimer.current);
@@ -1406,7 +1340,25 @@ export default function SignageApp() {
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
 
-  // REMOVED: Debug effect that was causing unnecessary re-renders
+  // Debug logging to verify timers are working
+  useEffect(() => {
+    const logTimer = setInterval(() => {
+      console.log(
+        `🕐 Debug: Current asset ${currentAssetIndex + 1}/${
+          assets.length
+        }, Timer active: ${playbackTimer.current !== null}`
+      );
+      if (assets[currentAssetIndex]) {
+        console.log(
+          `🎬 Current asset: ${assets[currentAssetIndex].name || "Unnamed"} (${
+            assets[currentAssetIndex].filetype
+          }) - ${assets[currentAssetIndex].time}s`
+        );
+      }
+    }, 10000); // Log every 10 seconds
+
+    return () => clearInterval(logTimer);
+  }, [currentAssetIndex, assets]);
 
   // Loading screen
   if (isLoading) {
@@ -1481,7 +1433,7 @@ export default function SignageApp() {
     <View style={styles.container}>
       <StatusBar hidden />
       <AssetRenderer
-        key={`${currentAssetIndex}-${currentAsset.filepath}`} // FIXED: Add stable key
+        key={`${currentAssetIndex}-${currentAsset.filepath}`}
         asset={currentAsset}
         currentAssetIndex={currentAssetIndex}
         totalAssets={assets.length}
@@ -1603,26 +1555,5 @@ const styles = StyleSheet.create({
     color: "#cccccc",
     fontSize: 16,
     textAlign: "center",
-  },
-  debugOverlay: {
-    position: "absolute",
-    top: 20,
-    left: 20,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    padding: 10,
-    borderRadius: 5,
-    maxWidth: 300,
-  },
-  debugText: {
-    color: "#ffffff",
-    fontSize: 12,
-    marginBottom: 2,
-    fontFamily: "monospace",
-  },
-  errorDebugText: {
-    color: "#ff6666",
-    fontSize: 12,
-    marginTop: 5,
-    fontFamily: "monospace",
   },
 });
