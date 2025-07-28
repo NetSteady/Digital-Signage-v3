@@ -634,7 +634,6 @@ export default function SignageApp() {
   const appStateRef = useRef(AppState.currentState);
   const lastApiResponseRef = useRef<string>("");
   const downloadQueue = useRef<Set<string>>(new Set());
-  const isTransitioning = useRef<boolean>(false);
 
   useKeepAwake();
 
@@ -801,81 +800,95 @@ export default function SignageApp() {
     [networkStatus, initCacheDirectory]
   );
 
-  // FIXED: Simplified timer cleanup - only clear playback timer
-  const clearPlaybackTimer = useCallback(() => {
-    console.log(`🧹 Clearing playback timer...`);
-
-    if (playbackTimer.current) {
-      console.log(`❌ Clearing playback timer`);
-      clearTimeout(playbackTimer.current);
-      playbackTimer.current = null;
-    }
-  }, []);
-
-  // FIXED: Completely rewritten asset switching without countdown timer
+  // FIXED: Asset switching - only handles index switching
   const switchToNextAsset = useCallback(() => {
-    if (isTransitioning.current) {
-      console.log("⏭️ Transition already in progress, ignoring");
-      return;
-    }
-
     if (assets.length === 0) {
       console.error("❌ No assets available for switching");
       return;
     }
 
-    isTransitioning.current = true;
-    console.log("⏭️ Switching to next asset");
-
-    // Calculate next index
-    const nextIndex = (currentAssetIndex + 1) % assets.length;
-    console.log(
-      `➡️ Moving from asset ${currentAssetIndex + 1} to ${nextIndex + 1}/${
-        assets.length
-      }`
-    );
-
-    // Clear ONLY the playback timer (not all timers)
+    // Clear any existing timer first
     if (playbackTimer.current) {
-      console.log(`❌ Clearing current playback timer`);
+      console.log(`❌ Clearing existing playback timer`);
       clearTimeout(playbackTimer.current);
       playbackTimer.current = null;
     }
 
-    // Update the index immediately
-    setCurrentAssetIndex(nextIndex);
+    // Calculate next index
+    const nextIndex = (currentAssetIndex + 1) % assets.length;
+    console.log(
+      `➡️ Switching from asset ${currentAssetIndex + 1} to ${nextIndex + 1}/${
+        assets.length
+      }`
+    );
 
-    // Schedule the next transition
-    const nextAsset = assets[nextIndex];
-    if (nextAsset) {
-      const duration = nextAsset.time * 1000;
+    // Update the current asset index
+    setCurrentAssetIndex(nextIndex);
+  }, [currentAssetIndex, assets]);
+
+  // FIXED: Separate function to start timer for current asset
+  const startTimerForCurrentAsset = useCallback(
+    (assetIndex: number) => {
+      if (assets.length === 0 || assetIndex >= assets.length) {
+        console.error("❌ Invalid asset index or no assets available");
+        return;
+      }
+
+      // Clear any existing timer
+      if (playbackTimer.current) {
+        clearTimeout(playbackTimer.current);
+        playbackTimer.current = null;
+      }
+
+      const currentAsset = assets[assetIndex];
+      const duration = currentAsset.time * 1000;
 
       console.log(
-        `🎬 Asset ${nextIndex + 1}/${assets.length}: ${
-          nextAsset.name || "Unnamed"
-        } (${nextAsset.filetype}) will play for ${nextAsset.time}s`
+        `🎬 Starting timer for asset ${assetIndex + 1}/${assets.length}: "${
+          currentAsset.name
+        }" (${currentAsset.filetype}) - ${currentAsset.time}s`
       );
+      console.log(`⏰ Timer set for ${duration}ms`);
 
-      // Set timer for next switch - DO NOT clear timers inside this setTimeout
       playbackTimer.current = setTimeout(() => {
-        console.log(`⏱️ Timer finished for asset ${nextIndex + 1}`);
-        isTransitioning.current = false;
-        switchToNextAsset(); // Recursive call for next asset
+        console.log(
+          `⏱️ Timer completed for asset ${assetIndex + 1}, switching to next`
+        );
+        switchToNextAsset();
       }, duration);
+    },
+    [assets, switchToNextAsset]
+  );
+
+  // FIXED: Effect to start timer when currentAssetIndex changes
+  useEffect(() => {
+    if (assets.length > 0 && !isLoading && !error) {
+      console.log(
+        `🔄 Asset index changed to ${currentAssetIndex + 1}, starting timer`
+      );
+      startTimerForCurrentAsset(currentAssetIndex);
     }
 
-    // Reset transition flag after a brief delay
-    setTimeout(() => {
-      isTransitioning.current = false;
-    }, 100);
-  }, [currentAssetIndex, assets]);
+    return () => {
+      // Cleanup timer when asset changes
+      if (playbackTimer.current) {
+        clearTimeout(playbackTimer.current);
+        playbackTimer.current = null;
+      }
+    };
+  }, [
+    currentAssetIndex,
+    assets.length,
+    isLoading,
+    error,
+    startTimerForCurrentAsset,
+  ]);
 
   // Handle asset rendering errors
   const handleAssetError = useCallback(() => {
-    console.log("🚨 Asset error reported, switching to next asset");
-    setTimeout(() => {
-      switchToNextAsset();
-    }, 1000);
+    console.log("🚨 Asset error reported, switching to next asset immediately");
+    // Don't use setTimeout here - switch immediately on error
+    switchToNextAsset();
   }, [switchToNextAsset]);
 
   // Network monitoring
@@ -1142,7 +1155,12 @@ export default function SignageApp() {
     try {
       setIsLoading(true);
       setError(null);
-      clearPlaybackTimer();
+
+      // Clear any existing timer
+      if (playbackTimer.current) {
+        clearTimeout(playbackTimer.current);
+        playbackTimer.current = null;
+      }
 
       console.log("🚀 Starting app initialization...");
 
@@ -1155,58 +1173,17 @@ export default function SignageApp() {
         console.log("🔄 Playlist updated, refreshing assets");
         console.log(`📋 Found ${result.assets.length} assets to load`);
 
-        // Update assets state first
+        // Update assets state and reset to first asset
         setAssets(result.assets);
         setCurrentAssetIndex(0);
 
         // Start background caching (non-blocking)
         preCacheAssets(result.assets);
 
-        // Start playback immediately
-        if (result.assets.length > 0) {
-          const firstAsset = result.assets[0];
-          const duration = firstAsset.time * 1000;
-
-          console.log(
-            `🎬 Starting first asset: ${firstAsset.name || "Unnamed"} for ${
-              firstAsset.time
-            }s`
-          );
-
-          // Reset transition flag
-          isTransitioning.current = false;
-
-          // Set timer for first asset
-          playbackTimer.current = setTimeout(() => {
-            console.log(`⏱️ First asset timer finished`);
-            isTransitioning.current = false;
-            switchToNextAsset();
-          }, duration);
-        }
+        // Note: Timer will be started by the useEffect when currentAssetIndex changes
       } else {
-        console.log("✅ Playlist unchanged, continuing with current assets");
-
-        // If we have assets but no timer running, restart the current asset
-        if (assets.length > 0 && !playbackTimer.current) {
-          const currentAsset = assets[currentAssetIndex];
-          if (currentAsset) {
-            const duration = currentAsset.time * 1000;
-            console.log(
-              `🔄 Restarting current asset timer: ${
-                currentAsset.name || "Unnamed"
-              } for ${currentAsset.time}s`
-            );
-
-            // Reset transition flag
-            isTransitioning.current = false;
-
-            playbackTimer.current = setTimeout(() => {
-              console.log(`⏱️ Restarted timer finished`);
-              isTransitioning.current = false;
-              switchToNextAsset();
-            }, duration);
-          }
-        }
+        console.log("✅ Playlist unchanged, keeping current state");
+        // Timer will be restarted by useEffect if needed
       }
 
       setRetryCount(0);
@@ -1222,11 +1199,8 @@ export default function SignageApp() {
     getDeviceName,
     fetchPlaylist,
     assets.length,
-    currentAssetIndex,
-    clearPlaybackTimer,
     scheduleRetry,
     preCacheAssets,
-    switchToNextAsset,
   ]);
 
   // Periodic API checks
@@ -1252,22 +1226,11 @@ export default function SignageApp() {
             console.log("Asset count changed, restarting playback");
             setAssets(periodicResult.assets);
             setCurrentAssetIndex(0);
-            clearPlaybackTimer();
 
             // Background cache new assets
             preCacheAssets(periodicResult.assets);
 
-            // Start first asset
-            if (periodicResult.assets.length > 0) {
-              const firstAsset = periodicResult.assets[0];
-              const duration = firstAsset.time * 1000;
-
-              isTransitioning.current = false;
-
-              playbackTimer.current = setTimeout(() => {
-                switchToNextAsset();
-              }, duration);
-            }
+            // Timer will be started by useEffect when currentAssetIndex changes
           }
         }
       } catch (error) {
@@ -1281,9 +1244,7 @@ export default function SignageApp() {
     isLoading,
     fetchPlaylist,
     assets.length,
-    clearPlaybackTimer,
     preCacheAssets,
-    switchToNextAsset,
   ]);
 
   // WebView refresh for memory management
@@ -1319,7 +1280,7 @@ export default function SignageApp() {
 
     return () => {
       console.log("Component unmounting, cleaning up");
-      clearPlaybackTimer();
+      if (playbackTimer.current) clearTimeout(playbackTimer.current);
       if (apiCheckTimer.current) clearInterval(apiCheckTimer.current);
       if (webViewRefreshTimer.current)
         clearInterval(webViewRefreshTimer.current);
@@ -1340,25 +1301,50 @@ export default function SignageApp() {
     };
   }, [assets.length, error, startPeriodicCheck, startWebViewRefresh]);
 
-  // Debug logging to verify timers are working
+  // FIXED: Add debugging useEffect to monitor timer status
   useEffect(() => {
-    const logTimer = setInterval(() => {
+    const debugInterval = setInterval(() => {
+      const hasTimer = playbackTimer.current !== null;
+      const currentAsset = assets[currentAssetIndex];
+
       console.log(
-        `🕐 Debug: Current asset ${currentAssetIndex + 1}/${
+        `🔍 DEBUG - Asset: ${currentAssetIndex + 1}/${
           assets.length
-        }, Timer active: ${playbackTimer.current !== null}`
+        }, Timer Active: ${hasTimer}`
       );
-      if (assets[currentAssetIndex]) {
+
+      if (currentAsset) {
         console.log(
-          `🎬 Current asset: ${assets[currentAssetIndex].name || "Unnamed"} (${
-            assets[currentAssetIndex].filetype
-          }) - ${assets[currentAssetIndex].time}s`
+          `🔍 Current Asset: "${currentAsset.name || "Unnamed"}" (${
+            currentAsset.filetype
+          }) - Duration: ${currentAsset.time}s`
         );
       }
-    }, 10000); // Log every 10 seconds
 
-    return () => clearInterval(logTimer);
-  }, [currentAssetIndex, assets]);
+      if (!hasTimer && assets.length > 0 && !isLoading && !error) {
+        console.warn(
+          "⚠️ WARNING: No timer active but assets available - this might indicate a problem!"
+        );
+      }
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(debugInterval);
+  }, [currentAssetIndex, assets, isLoading, error]);
+
+  // FIXED: Add emergency restart mechanism
+  useEffect(() => {
+    // Emergency timer restart if rotation stops
+    const emergencyCheck = setTimeout(() => {
+      if (assets.length > 0 && !playbackTimer.current && !isLoading && !error) {
+        console.warn(
+          "🚨 EMERGENCY: No timer detected after 30 seconds, restarting rotation"
+        );
+        switchToNextAsset();
+      }
+    }, 30000); // Check after 30 seconds
+
+    return () => clearTimeout(emergencyCheck);
+  }, [currentAssetIndex, assets.length, isLoading, error, switchToNextAsset]);
 
   // Loading screen
   if (isLoading) {
