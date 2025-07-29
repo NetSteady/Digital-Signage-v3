@@ -61,6 +61,9 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
   refreshInterval = 30,
   retryDelay = 60,
 }) => {
+  // Keep screen awake at component level
+  useKeepAwake();
+
   const [htmlContent, setHtmlContent] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string>("");
@@ -69,21 +72,24 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
   const [isOffline, setIsOffline] = useState<boolean>(false);
 
   const loadContent = useCallback(async () => {
-    useKeepAwake();
-
     try {
+      console.log("Starting content load...");
       setIsLoading(true);
       setError("");
 
       // Get device name
+      console.log("Getting device name...");
       const device = await getDeviceName();
       setDeviceName(device);
-
-      console.log(`Loading content for device: ${device}`);
+      console.log(`Device name: ${device}`);
 
       // Check internet connection first
+      console.log("Checking internet connection...");
       const hasInternet = await checkInternetConnection();
       setIsOffline(!hasInternet);
+      console.log(
+        `Internet connection: ${hasInternet ? "Available" : "Not available"}`
+      );
 
       if (!hasInternet) {
         console.log(
@@ -100,9 +106,13 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
           const html = createHTMLWithData(cachedAssets);
           setHtmlContent(html);
           setLastUpdate(new Date());
+          setIsLoading(false);
 
           // Schedule retry when back online
-          setTimeout(loadContent, retryDelay * 1000);
+          setTimeout(() => {
+            console.log("Retrying connection after offline mode...");
+            loadContent();
+          }, retryDelay * 1000);
           return;
         } else {
           throw new Error(
@@ -113,6 +123,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
 
       // Online mode - fetch fresh content
       setIsOffline(false);
+      console.log("Fetching playlist from API...");
 
       // Fetch playlist from API
       const assets = await fetchPlaylist(device);
@@ -124,7 +135,10 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
       console.log(`Found ${assets.length} assets to download`);
 
       // Clear old cache and download new assets (only when online)
+      console.log("Clearing cache...");
       await clearCache();
+
+      console.log("Downloading assets...");
       const localAssets = await downloadAssets(assets, device);
 
       if (localAssets.length === 0) {
@@ -134,41 +148,46 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
       console.log(`Successfully downloaded ${localAssets.length} assets`);
 
       // Generate HTML for display
+      console.log("Generating HTML content...");
       const html = createHTMLWithData(localAssets);
       setHtmlContent(html);
       setLastUpdate(new Date());
+      console.log("Content loaded successfully!");
     } catch (err) {
       const errorMessage =
         err instanceof Error ? err.message : "Unknown error occurred";
       console.error("Failed to load content:", errorMessage);
       setError(errorMessage);
 
-      // If we have existing content, keep showing it
-      if (htmlContent) {
-        console.log("Keeping existing content due to error");
-      }
-
       // Schedule retry
-      setTimeout(loadContent, retryDelay * 1000);
+      setTimeout(() => {
+        console.log(`Retrying after error in ${retryDelay} seconds...`);
+        loadContent();
+      }, retryDelay * 1000);
     } finally {
       setIsLoading(false);
     }
-  }, [retryDelay, htmlContent]);
+  }, [retryDelay]); // Removed htmlContent dependency to prevent infinite loops
 
   // Initial load
   useEffect(() => {
+    console.log("Component mounted, starting initial load...");
     loadContent();
-  }, [loadContent]);
+  }, []); // Empty dependency array for initial load only
 
   // Set up refresh interval
   useEffect(() => {
     if (refreshInterval > 0) {
+      console.log(`Setting up refresh interval: ${refreshInterval} minutes`);
       const interval = setInterval(() => {
         console.log("Refreshing content...");
         loadContent();
       }, refreshInterval * 60 * 1000);
 
-      return () => clearInterval(interval);
+      return () => {
+        console.log("Clearing refresh interval");
+        clearInterval(interval);
+      };
     }
   }, [refreshInterval, loadContent]);
 
@@ -176,6 +195,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
   useEffect(() => {
     const cleanup = () => {
       if (global.gc) {
+        console.log("Running garbage collection");
         global.gc();
       }
     };
@@ -202,6 +222,9 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
             No internet connection - checking for cached content...
           </Text>
         )}
+        <Text style={styles.debugText}>
+          Debug: Check console logs for detailed progress
+        </Text>
       </View>
     );
   }
@@ -253,13 +276,20 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
             console.error("WebView error:", nativeEvent);
           }}
           onLoad={() => {
-            console.log("Content loaded successfully");
+            console.log("WebView content loaded successfully");
           }}
           startInLoadingState={false}
           onHttpError={(syntheticEvent) => {
             console.error("HTTP error in WebView:", syntheticEvent.nativeEvent);
           }}
-          renderError={() => <Text>Content failed to load</Text>}
+          renderError={(errorName) => {
+            console.error("WebView render error:", errorName);
+            return (
+              <Text style={styles.errorText}>
+                Content failed to load: {errorName}
+              </Text>
+            );
+          }}
         />
       )}
 
@@ -330,6 +360,13 @@ const styles = StyleSheet.create({
     color: "#ffaa00",
     fontSize: 14,
     marginTop: 10,
+    textAlign: "center",
+    fontStyle: "italic",
+  },
+  debugText: {
+    color: "#666666",
+    fontSize: 10,
+    marginTop: 20,
     textAlign: "center",
     fontStyle: "italic",
   },
