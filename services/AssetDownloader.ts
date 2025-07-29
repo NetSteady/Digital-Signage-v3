@@ -2,12 +2,19 @@ import * as FileSystem from "expo-file-system";
 import { Asset } from "./Api";
 
 const CACHE_DIR = `${FileSystem.documentDirectory}signage_cache/`;
+const CACHE_MANIFEST_FILE = `${CACHE_DIR}manifest.json`;
 
 export interface LocalAsset {
   type: "image" | "video" | "web";
   url: string;
   duration: number;
   name?: string;
+}
+
+interface CacheManifest {
+  assets: LocalAsset[];
+  timestamp: number;
+  deviceName: string;
 }
 
 export const clearCache = async (): Promise<void> => {
@@ -27,8 +34,75 @@ export const clearCache = async (): Promise<void> => {
   }
 };
 
+// Save cache manifest for offline access
+const saveCacheManifest = async (
+  assets: LocalAsset[],
+  deviceName: string
+): Promise<void> => {
+  try {
+    const manifest: CacheManifest = {
+      assets,
+      timestamp: Date.now(),
+      deviceName,
+    };
+
+    await FileSystem.writeAsStringAsync(
+      CACHE_MANIFEST_FILE,
+      JSON.stringify(manifest),
+      { encoding: FileSystem.EncodingType.UTF8 }
+    );
+
+    console.log(`Cache manifest saved with ${assets.length} assets`);
+  } catch (error) {
+    console.error("Error saving cache manifest:", error);
+  }
+};
+
+// Load cached assets for offline mode
+export const getCachedAssets = async (): Promise<LocalAsset[]> => {
+  try {
+    const manifestExists = await FileSystem.getInfoAsync(CACHE_MANIFEST_FILE);
+    if (!manifestExists.exists) {
+      console.log("No cache manifest found");
+      return [];
+    }
+
+    const manifestContent = await FileSystem.readAsStringAsync(
+      CACHE_MANIFEST_FILE,
+      { encoding: FileSystem.EncodingType.UTF8 }
+    );
+
+    const manifest: CacheManifest = JSON.parse(manifestContent);
+
+    // Verify cached files still exist
+    const validAssets: LocalAsset[] = [];
+
+    for (const asset of manifest.assets) {
+      if (asset.type === "web") {
+        // Web assets don't need file verification
+        validAssets.push(asset);
+      } else {
+        // Check if local file still exists
+        const fileExists = await FileSystem.getInfoAsync(asset.url);
+        if (fileExists.exists) {
+          validAssets.push(asset);
+        } else {
+          console.log(`Cached file missing: ${asset.url}`);
+        }
+      }
+    }
+
+    console.log(`Found ${validAssets.length} valid cached assets`);
+    return validAssets;
+  } catch (error) {
+    console.error("Error loading cached assets:", error);
+    return [];
+  }
+};
+
 export const downloadAssets = async (
-  assets: Asset[]
+  assets: Asset[],
+  deviceName?: string
 ): Promise<LocalAsset[]> => {
   const dirInfo = await FileSystem.getInfoAsync(CACHE_DIR);
   if (!dirInfo.exists) {
@@ -46,6 +120,11 @@ export const downloadAssets = async (
     } catch (error) {
       console.error(`Failed to download ${asset.filepath}:`, error);
     }
+  }
+
+  // Save manifest for offline access
+  if (deviceName && localAssets.length > 0) {
+    await saveCacheManifest(localAssets, deviceName);
   }
 
   return localAssets;
@@ -67,7 +146,7 @@ const downloadSingleAsset = async (asset: Asset): Promise<LocalAsset> => {
 
     return {
       type: "image",
-      url: localPath,
+      url: `file://${localPath}`,
       duration: parseInt(time),
       name,
     };
@@ -86,7 +165,7 @@ const downloadSingleAsset = async (asset: Asset): Promise<LocalAsset> => {
 
     return {
       type: "video",
-      url: localPath,
+      url: `file://${localPath}`,
       duration: parseInt(time),
       name,
     };
@@ -178,14 +257,42 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
                 img.classList.remove('hidden');
             } else if (currentItem.type === 'video') {
                 video.src = currentItem.url;
+                video.loop = true;
+                
+                // Set up event handlers before loading
                 video.onerror = () => {
                     console.error('Video failed to load:', currentItem.url);
                     // Skip to next item immediately
                     currentIndex = (currentIndex + 1) % contentList.length;
                     setTimeout(showContent, 100);
                 };
+                
+                video.onended = () => {
+                    console.log('Video ended naturally');
+                };
+                
+                // Better video loading handling for T95 boxes
+                video.oncanplaythrough = () => {
+                    console.log('Video ready to play:', currentItem.url);
+                    video.play().catch((error) => {
+                        console.error('Video play failed:', error);
+                        // Skip to next item if play fails
+                        currentIndex = (currentIndex + 1) % contentList.length;
+                        setTimeout(showContent, 100);
+                    });
+                };
+                
+                // Fallback if oncanplaythrough doesn't fire
+                video.onloadeddata = () => {
+                    console.log('Video data loaded, attempting play');
+                    setTimeout(() => {
+                        if (video.paused) {
+                            video.play().catch(console.error);
+                        }
+                    }, 500);
+                };
+
                 video.load();
-                video.play();
                 video.classList.remove('hidden');
             }
 
