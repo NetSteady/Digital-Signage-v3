@@ -189,7 +189,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dynamic Content Rotator</title>
+    <title>Digital Signage Display</title>
     <style>
         * {
             margin: 0;
@@ -220,6 +220,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
         
         .hidden {
             display: none !important;
+            opacity: 0 !important;
         }
         
         .content-item {
@@ -228,6 +229,8 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             position: absolute;
             top: 0;
             left: 0;
+            opacity: 1;
+            transition: opacity 0.3s ease-in-out;
         }
         
         iframe {
@@ -253,18 +256,6 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             display: block;
         }
         
-        .debug-info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            color: #fff;
-            background: rgba(0,0,0,0.7);
-            padding: 5px 10px;
-            font-size: 12px;
-            border-radius: 3px;
-            z-index: 1000;
-        }
-        
         .error-message {
             position: absolute;
             top: 50%;
@@ -276,16 +267,15 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             border-radius: 5px;
             text-align: center;
             font-size: 16px;
+            z-index: 1000;
         }
     </style>
 </head>
 <body>
     <div class="content-container">
-        <div id="debug-info" class="debug-info"></div>
-        
         <iframe id="content-frame" class="content-item hidden"></iframe>
         <img id="content-image" class="content-item hidden" alt="Display Image">
-        <video id="content-video" class="content-item hidden" autoplay muted playsinline></video>
+        <video id="content-video" class="content-item hidden" autoplay muted playsinline preload="metadata"></video>
         
         <div id="error-display" class="error-message hidden">
             <div id="error-text"></div>
@@ -293,52 +283,65 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
     </div>
     
     <script>
-        console.log('HTML loaded, starting content rotation...');
+        console.log('Digital signage display initialized');
         
         const contentList = ${JSON.stringify(localAssets)};
         let currentIndex = 0;
         let rotationTimeout;
-        let isRotating = false;
+        let isTransitioning = false;
+        let currentVideoElement = null;
         
-        const debugInfo = document.getElementById('debug-info');
         const errorDisplay = document.getElementById('error-display');
         const errorText = document.getElementById('error-text');
         
-        function updateDebugInfo(message) {
-            console.log('Debug:', message);
-            debugInfo.textContent = \`[\${new Date().toLocaleTimeString()}] \${message}\`;
-        }
-        
         function showError(message) {
-            console.error('Error:', message);
+            console.error('Display Error:', message);
             errorText.textContent = message;
             errorDisplay.classList.remove('hidden');
             setTimeout(() => {
                 errorDisplay.classList.add('hidden');
-            }, 3000);
+            }, 5000);
         }
         
         function hideAllContent() {
-            document.getElementById('content-frame').classList.add('hidden');
-            document.getElementById('content-image').classList.add('hidden');
-            document.getElementById('content-video').classList.add('hidden');
+            const frame = document.getElementById('content-frame');
+            const img = document.getElementById('content-image');
+            const video = document.getElementById('content-video');
+            
+            // Clean up video playback
+            if (currentVideoElement && !currentVideoElement.paused) {
+                currentVideoElement.pause();
+                currentVideoElement.currentTime = 0;
+                currentVideoElement.src = '';
+                currentVideoElement.load();
+            }
+            currentVideoElement = null;
+            
+            // Clean up iframe
+            if (!frame.classList.contains('hidden')) {
+                frame.src = 'about:blank';
+            }
+            
+            // Hide all elements
+            frame.classList.add('hidden');
+            img.classList.add('hidden');
+            video.classList.add('hidden');
         }
         
         function showContent() {
             if (contentList.length === 0) {
-                showError('No content available');
+                showError('No content available to display');
                 return;
             }
             
-            if (isRotating) {
-                console.log('Already rotating, skipping...');
+            if (isTransitioning) {
                 return;
             }
             
-            isRotating = true;
+            isTransitioning = true;
             const currentItem = contentList[currentIndex];
             
-            updateDebugInfo(\`Loading: \${currentItem.name || 'Item ' + (currentIndex + 1)} (\${currentItem.type})\`);
+            console.log(\`Displaying: \${currentItem.name || 'Item ' + (currentIndex + 1)} (\${currentItem.type})\`);
             
             const frame = document.getElementById('content-frame');
             const img = document.getElementById('content-image');
@@ -347,119 +350,153 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             // Clear any existing timeout
             if (rotationTimeout) {
                 clearTimeout(rotationTimeout);
+                rotationTimeout = null;
             }
 
-            // Hide all content first
+            // Hide all content with proper cleanup
             hideAllContent();
 
-            // Show the correct content type
-            if (currentItem.type === 'web') {
-                updateDebugInfo(\`Loading web content: \${currentItem.url}\`);
-                frame.src = currentItem.url;
-                frame.onload = () => {
-                    updateDebugInfo('Web content loaded successfully');
-                };
-                frame.onerror = () => {
-                    showError(\`Web content failed to load: \${currentItem.url}\`);
-                    skipToNext();
-                };
-                frame.classList.remove('hidden');
-                
-            } else if (currentItem.type === 'image') {
-                updateDebugInfo(\`Loading image: \${currentItem.url}\`);
-                
-                // Create new image to test loading
-                const testImg = new Image();
-                testImg.onload = () => {
-                    updateDebugInfo(\`Image loaded successfully: \${testImg.width}x\${testImg.height}\`);
-                    img.src = currentItem.url;
-                    img.classList.remove('hidden');
-                };
-                testImg.onerror = () => {
-                    showError(\`Image failed to load: \${currentItem.url}\`);
-                    skipToNext();
-                };
-                
-                // Load the test image
-                testImg.src = currentItem.url;
-                
-            } else if (currentItem.type === 'video') {
-                updateDebugInfo(\`Loading video: \${currentItem.url}\`);
-                
-                video.src = currentItem.url;
-                video.loop = true;
-                
-                // Set up event handlers before loading
-                video.onerror = (e) => {
-                    console.error('Video error details:', e);
-                    showError(\`Video failed to load: \${currentItem.url}\`);
-                    skipToNext();
-                };
-                
-                video.onended = () => {
-                    updateDebugInfo('Video ended naturally');
-                };
-                
-                // Better video loading handling for T95 boxes
-                video.oncanplaythrough = () => {
-                    updateDebugInfo('Video ready to play');
-                    video.play().then(() => {
-                        updateDebugInfo('Video playing successfully');
-                        video.classList.remove('hidden');
-                    }).catch((error) => {
-                        console.error('Video play failed:', error);
-                        showError(\`Video play failed: \${error.message}\`);
+            // Small delay to ensure cleanup is complete
+            setTimeout(() => {
+                if (currentItem.type === 'web') {
+                    console.log(\`Loading web content: \${currentItem.url}\`);
+                    
+                    frame.onload = () => {
+                        console.log('Web content loaded successfully');
+                        frame.classList.remove('hidden');
+                        scheduleNext(currentItem.duration);
+                    };
+                    
+                    frame.onerror = () => {
+                        console.error(\`Web content failed to load: \${currentItem.url}\`);
+                        showError('Web content failed to load');
                         skipToNext();
-                    });
-                };
-                
-                // Fallback if oncanplaythrough doesn't fire
-                video.onloadeddata = () => {
-                    updateDebugInfo('Video data loaded, attempting play');
+                    };
+                    
+                    // Set timeout as fallback for web content
                     setTimeout(() => {
-                        if (video.paused && video.classList.contains('hidden')) {
-                            video.play().then(() => {
-                                video.classList.remove('hidden');
-                            }).catch(console.error);
+                        if (frame.classList.contains('hidden')) {
+                            console.log('Web content timeout - showing anyway');
+                            frame.classList.remove('hidden');
+                            scheduleNext(currentItem.duration);
                         }
-                    }, 500);
-                };
-
-                video.load();
-            }
-
-            // Calculate duration and set next rotation
-            const duration = Math.max(currentItem.duration * 1000, 1000); // Minimum 1 second
-            updateDebugInfo(\`Next rotation in \${currentItem.duration} seconds\`);
+                    }, 8000); // 8 second timeout for web content
+                    
+                    frame.src = currentItem.url;
+                    
+                } else if (currentItem.type === 'image') {
+                    console.log(\`Loading image: \${currentItem.url}\`);
+                    
+                    const testImg = new Image();
+                    testImg.onload = () => {
+                        console.log(\`Image loaded: \${testImg.width}x\${testImg.height}\`);
+                        img.src = currentItem.url;
+                        img.classList.remove('hidden');
+                        scheduleNext(currentItem.duration);
+                    };
+                    testImg.onerror = () => {
+                        console.error(\`Image failed to load: \${currentItem.url}\`);
+                        showError('Image failed to load');
+                        skipToNext();
+                    };
+                    
+                    testImg.src = currentItem.url;
+                    
+                } else if (currentItem.type === 'video') {
+                    console.log(\`Loading video: \${currentItem.url}\`);
+                    
+                    // Create a fresh video element approach for T95 boxes
+                    video.src = '';
+                    video.load();
+                    
+                    // Set up event handlers
+                    video.onerror = (e) => {
+                        console.error('Video error:', e);
+                        showError('Video playback failed');
+                        skipToNext();
+                    };
+                    
+                    video.oncanplay = () => {
+                        console.log('Video ready to play');
+                        currentVideoElement = video;
+                        
+                        video.play().then(() => {
+                            console.log('Video playing successfully');
+                            video.classList.remove('hidden');
+                            scheduleNext(currentItem.duration);
+                            
+                            // Set up end handler
+                            video.onended = () => {
+                                console.log('Video ended naturally');
+                                // Don't auto-advance here, let the timer handle it
+                            };
+                            
+                        }).catch((error) => {
+                            console.error('Video play failed:', error);
+                            showError('Video play failed');
+                            skipToNext();
+                        });
+                    };
+                    
+                    // Load the video
+                    video.src = currentItem.url;
+                    video.currentTime = 0;
+                    video.loop = false; // Don't loop, let timer handle transitions
+                    video.load();
+                }
+                
+                isTransitioning = false;
+            }, 300); // Small delay for cleanup
+        }
+        
+        function scheduleNext(duration) {
+            const timeoutDuration = Math.max(duration * 1000, 2000); // Minimum 2 seconds
+            console.log(\`Next content in \${duration} seconds\`);
             
             rotationTimeout = setTimeout(() => {
                 rotateToNext();
-            }, duration);
-            
-            isRotating = false;
+            }, timeoutDuration);
         }
         
         function skipToNext() {
-            updateDebugInfo('Skipping to next item due to error');
-            rotateToNext();
+            console.log('Skipping to next content due to error');
+            setTimeout(() => {
+                rotateToNext();
+            }, 1000);
         }
         
         function rotateToNext() {
+            if (isTransitioning) {
+                return;
+            }
+            
             currentIndex = (currentIndex + 1) % contentList.length;
-            updateDebugInfo(\`Moving to item \${currentIndex + 1} of \${contentList.length}\`);
-            setTimeout(showContent, 500); // Small delay before showing next content
+            console.log(\`Rotating to item \${currentIndex + 1} of \${contentList.length}\`);
+            
+            // Small delay before showing next content to ensure clean transition
+            setTimeout(() => {
+                showContent();
+            }, 500);
         }
 
-        // Initialize
-        updateDebugInfo(\`Starting rotation with \${contentList.length} items\`);
-        showContent();
+        // Initialize display
+        console.log(\`Starting content rotation with \${contentList.length} items\`);
+        if (contentList.length > 0) {
+            showContent();
+        } else {
+            showError('No content items configured');
+        }
         
         // Global error handler
         window.onerror = function(msg, url, lineNo, columnNo, error) {
-            console.error('Global error:', msg, 'at', url, ':', lineNo);
-            showError(\`JavaScript error: \${msg}\`);
+            console.error('JavaScript error:', msg, 'at line', lineNo);
             return false;
         };
+        
+        // Prevent context menu and other interactions
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        document.addEventListener('selectstart', e => e.preventDefault());
+        document.addEventListener('dragstart', e => e.preventDefault());
     </script>
 </body>
 </html>`;

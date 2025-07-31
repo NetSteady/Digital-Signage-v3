@@ -264,19 +264,13 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
         <Text style={styles.loadingText}>
           {deviceName
             ? `Loading content for ${deviceName}...`
-            : "Initializing..."}
+            : "Initializing digital signage..."}
         </Text>
         {isOffline && (
           <Text style={styles.offlineText}>
             No internet connection - checking for cached content...
           </Text>
         )}
-        <Text style={styles.debugText}>
-          Debug: Check console logs for detailed progress
-        </Text>
-        <Text style={styles.configText}>
-          Refresh: {refreshInterval}min | Retry: {retryDelay}s
-        </Text>
       </View>
     );
   }
@@ -298,9 +292,6 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
             Device is offline - will retry when connection is restored
           </Text>
         )}
-        <Text style={styles.configText}>
-          Refresh: {refreshInterval}min | Retry: {retryDelay}s
-        </Text>
       </View>
     );
   }
@@ -340,24 +331,24 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
           renderError={(errorName) => {
             console.error("WebView render error:", errorName);
             return (
-              <Text style={styles.errorText}>
-                Content failed to load: {errorName}
-              </Text>
+              <View style={styles.centerContainer}>
+                <Text style={styles.errorText}>Display error: {errorName}</Text>
+                <Text style={styles.retryText}>
+                  Content will retry automatically...
+                </Text>
+              </View>
             );
           }}
         />
       )}
 
-      {/* Status indicator */}
-      {(isOffline || error) && (
+      {/* Minimal status indicator - only show when there are issues */}
+      {isOffline && !isLoading && (
         <View style={styles.statusBar}>
           <Text style={styles.statusText}>
-            {isOffline ? "OFFLINE MODE" : ""}
-            {error ? ` • ${error}` : ""}
-            {lastUpdate
-              ? ` • Last updated: ${lastUpdate.toLocaleTimeString()}`
-              : ""}
-            {` • Refresh: ${refreshInterval}min`}
+            OFFLINE MODE
+            {lastUpdate &&
+              ` • Last updated: ${lastUpdate.toLocaleTimeString()}`}
           </Text>
         </View>
       )}
@@ -415,20 +406,6 @@ const styles = StyleSheet.create({
   offlineText: {
     color: "#ffaa00",
     fontSize: 14,
-    marginTop: 10,
-    textAlign: "center",
-    fontStyle: "italic",
-  },
-  debugText: {
-    color: "#666666",
-    fontSize: 10,
-    marginTop: 20,
-    textAlign: "center",
-    fontStyle: "italic",
-  },
-  configText: {
-    color: "#666666",
-    fontSize: 10,
     marginTop: 10,
     textAlign: "center",
     fontStyle: "italic",
