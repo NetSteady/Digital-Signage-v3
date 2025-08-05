@@ -37,7 +37,7 @@ export const clearCache = async (): Promise<void> => {
 // Save cache manifest for offline access
 const saveCacheManifest = async (
   assets: LocalAsset[],
-  deviceName: string
+  deviceName: string,
 ): Promise<void> => {
   try {
     const manifest: CacheManifest = {
@@ -49,7 +49,7 @@ const saveCacheManifest = async (
     await FileSystem.writeAsStringAsync(
       CACHE_MANIFEST_FILE,
       JSON.stringify(manifest),
-      { encoding: FileSystem.EncodingType.UTF8 }
+      { encoding: FileSystem.EncodingType.UTF8 },
     );
 
     console.log(`Cache manifest saved with ${assets.length} assets`);
@@ -69,7 +69,7 @@ export const getCachedAssets = async (): Promise<LocalAsset[]> => {
 
     const manifestContent = await FileSystem.readAsStringAsync(
       CACHE_MANIFEST_FILE,
-      { encoding: FileSystem.EncodingType.UTF8 }
+      { encoding: FileSystem.EncodingType.UTF8 },
     );
 
     const manifest: CacheManifest = JSON.parse(manifestContent);
@@ -102,7 +102,7 @@ export const getCachedAssets = async (): Promise<LocalAsset[]> => {
 
 export const downloadAssets = async (
   assets: Asset[],
-  deviceName?: string
+  deviceName?: string,
 ): Promise<LocalAsset[]> => {
   const dirInfo = await FileSystem.getInfoAsync(CACHE_DIR);
   if (!dirInfo.exists) {
@@ -230,7 +230,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             top: 0;
             left: 0;
             opacity: 1;
-            transition: opacity 0.5s ease-in-out;
+            transition: opacity 0.3s ease-in-out;
         }
         
         iframe {
@@ -273,9 +273,12 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
 </head>
 <body>
     <div class="content-container">
-        <iframe id="content-frame" class="content-item hidden" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"></iframe>
+        <iframe id="content-frame" class="content-item hidden" 
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-top-navigation allow-downloads"
+                allow="autoplay; encrypted-media; fullscreen; geolocation; microphone; camera">
+        </iframe>
         <img id="content-image" class="content-item hidden" alt="Display Image">
-        <video id="content-video" class="content-item hidden" autoplay muted playsinline preload="metadata"></video>
+        <video id="content-video" class="content-item hidden" autoplay muted playsinline preload="auto"></video>
         
         <div id="error-display" class="error-message hidden">
             <div id="error-text"></div>
@@ -291,6 +294,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
         let isTransitioning = false;
         let currentVideoElement = null;
         let webContentLoadTimeout = null;
+        let videoLoadTimeout = null;
         
         const errorDisplay = document.getElementById('error-display');
         const errorText = document.getElementById('error-text');
@@ -301,7 +305,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             errorDisplay.classList.remove('hidden');
             setTimeout(() => {
                 errorDisplay.classList.add('hidden');
-            }, 5000);
+            }, 3000); // Reduced error display time
         }
         
         function hideAllContent() {
@@ -309,10 +313,14 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             const img = document.getElementById('content-image');
             const video = document.getElementById('content-video');
             
-            // Clear web content timeout
+            // Clear timeouts
             if (webContentLoadTimeout) {
                 clearTimeout(webContentLoadTimeout);
                 webContentLoadTimeout = null;
+            }
+            if (videoLoadTimeout) {
+                clearTimeout(videoLoadTimeout);
+                videoLoadTimeout = null;
             }
             
             // Clean up video playback
@@ -324,7 +332,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             }
             currentVideoElement = null;
             
-            // Clean up iframe - force reload by changing src
+            // Clean up iframe
             if (!frame.classList.contains('hidden')) {
                 frame.src = 'about:blank';
             }
@@ -363,7 +371,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             // Hide all content with proper cleanup
             hideAllContent();
 
-            // Small delay to ensure cleanup is complete
+            // Reduced delay for faster transitions
             setTimeout(() => {
                 if (currentItem.type === 'web') {
                     console.log(\`Loading web content: \${currentItem.url}\`);
@@ -395,7 +403,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
                         }
                     };
                     
-                    // Set a more generous timeout for web content (15 seconds)
+                    // Reduced timeout for web content (10 seconds)
                     webContentLoadTimeout = setTimeout(() => {
                         if (!webContentLoaded) {
                             webContentLoaded = true;
@@ -403,13 +411,15 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
                             frame.classList.remove('hidden');
                             scheduleNext(currentItem.duration);
                         }
-                    }, 15000);
+                    }, 10000);
                     
-                    // Force iframe to reload completely
-                    frame.src = 'about:blank';
-                    setTimeout(() => {
+                    // Load iframe with proper error handling
+                    try {
                         frame.src = currentItem.url;
-                    }, 100);
+                    } catch (e) {
+                        console.error('Error setting iframe src:', e);
+                        skipToNext();
+                    }
                     
                 } else if (currentItem.type === 'image') {
                     console.log(\`Loading image: \${currentItem.url}\`);
@@ -432,53 +442,92 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
                 } else if (currentItem.type === 'video') {
                     console.log(\`Loading video: \${currentItem.url}\`);
                     
-                    // Create a fresh video element approach for T95 boxes
+                    let videoLoaded = false;
+                    
+                    // Clear any existing handlers
+                    video.oncanplay = null;
+                    video.onerror = null;
+                    video.onloadeddata = null;
+                    video.onended = null;
+                    
+                    // Reset video
                     video.src = '';
                     video.load();
                     
-                    // Set up event handlers
+                    // Set up error handler with timeout fallback
                     video.onerror = (e) => {
-                        console.error('Video error:', e);
-                        showError('Video playback failed');
-                        skipToNext();
+                        if (!videoLoaded) {
+                            videoLoaded = true;
+                            console.error('Video error:', e, 'URL:', currentItem.url);
+                            showError('Video playback failed');
+                            skipToNext();
+                        }
                     };
                     
-                    video.oncanplay = () => {
-                        console.log('Video ready to play');
-                        currentVideoElement = video;
-                        
-                        video.play().then(() => {
-                            console.log('Video playing successfully');
-                            video.classList.remove('hidden');
-                            scheduleNext(currentItem.duration);
+                    // Try multiple events for better compatibility
+                    const handleVideoReady = () => {
+                        if (!videoLoaded) {
+                            videoLoaded = true;
+                            console.log('Video ready to play');
+                            currentVideoElement = video;
                             
-                            // Set up end handler - but prioritize the timer
-                            video.onended = () => {
-                                console.log('Video ended naturally');
-                                // Let the timer handle transitions for consistency
-                            };
+                            if (videoLoadTimeout) {
+                                clearTimeout(videoLoadTimeout);
+                                videoLoadTimeout = null;
+                            }
                             
-                        }).catch((error) => {
-                            console.error('Video play failed:', error);
-                            showError('Video play failed');
-                            skipToNext();
-                        });
+                            video.play().then(() => {
+                                console.log('Video playing successfully');
+                                video.classList.remove('hidden');
+                                scheduleNext(currentItem.duration);
+                                
+                                // Set up end handler
+                                video.onended = () => {
+                                    console.log('Video ended naturally');
+                                    // Let the timer handle transitions for consistency
+                                };
+                                
+                            }).catch((error) => {
+                                console.error('Video play failed:', error);
+                                showError('Video play failed');
+                                skipToNext();
+                            });
+                        }
                     };
+                    
+                    video.oncanplay = handleVideoReady;
+                    video.onloadeddata = handleVideoReady;
+                    
+                    // Set timeout for video loading (5 seconds)
+                    videoLoadTimeout = setTimeout(() => {
+                        if (!videoLoaded) {
+                            videoLoaded = true;
+                            console.error('Video load timeout:', currentItem.url);
+                            showError('Video load timeout');
+                            skipToNext();
+                        }
+                    }, 5000);
                     
                     // Load the video
-                    video.src = currentItem.url;
-                    video.currentTime = 0;
-                    video.loop = false;
-                    video.load();
+                    try {
+                        video.src = currentItem.url;
+                        video.currentTime = 0;
+                        video.loop = false;
+                        video.muted = true; // Ensure muted for autoplay
+                        video.load();
+                    } catch (e) {
+                        console.error('Error setting video src:', e);
+                        skipToNext();
+                    }
                 }
                 
                 isTransitioning = false;
-            }, 200); // Reduced delay for faster transitions
+            }, 100); // Reduced from 200ms to 100ms
         }
         
         function scheduleNext(duration) {
-            // Reduced minimum duration for faster video transitions
-            const timeoutDuration = Math.max(duration * 1000, 1500); // Minimum 1.5 seconds (was 2)
+            // Further reduced minimum duration for faster transitions
+            const timeoutDuration = Math.max(duration * 1000, 1000); // Minimum 1 second (was 1.5)
             console.log(\`Next content in \${duration} seconds\`);
             
             rotationTimeout = setTimeout(() => {
@@ -490,7 +539,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             console.log('Skipping to next content due to error');
             setTimeout(() => {
                 rotateToNext();
-            }, 500); // Reduced skip delay
+            }, 250); // Reduced from 500ms to 250ms
         }
         
         function rotateToNext() {
@@ -501,10 +550,10 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
             currentIndex = (currentIndex + 1) % contentList.length;
             console.log(\`Rotating to item \${currentIndex + 1} of \${contentList.length}\`);
             
-            // Reduced delay for faster transitions
+            // Further reduced delay for faster transitions
             setTimeout(() => {
                 showContent();
-            }, 100);
+            }, 50); // Reduced from 100ms to 50ms
         }
 
         // Initialize display

@@ -41,7 +41,7 @@ const checkInternetConnection = async (retries = 3): Promise<boolean> => {
     } catch (error) {
       console.log(
         `Connectivity check attempt ${i + 1}/${retries} failed:`,
-        error
+        error,
       );
 
       if (i === retries - 1) {
@@ -92,6 +92,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
   // Store the last fetched assets for comparison
   const lastFetchedAssets = useRef<Asset[]>([]);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const webViewRef = useRef<WebView>(null);
 
   const loadContent = useCallback(
     async (forceDownload: boolean = false) => {
@@ -111,12 +112,12 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
         const hasInternet = await checkInternetConnection();
         setIsOffline(!hasInternet);
         console.log(
-          `Internet connection: ${hasInternet ? "Available" : "Not available"}`
+          `Internet connection: ${hasInternet ? "Available" : "Not available"}`,
         );
 
         if (!hasInternet) {
           console.log(
-            "No internet connection - attempting to use cached content"
+            "No internet connection - attempting to use cached content",
           );
 
           // Try to load cached content
@@ -124,7 +125,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
 
           if (cachedAssets.length > 0) {
             console.log(
-              `Using ${cachedAssets.length} cached assets (offline mode)`
+              `Using ${cachedAssets.length} cached assets (offline mode)`,
             );
             const html = createHTMLWithData(cachedAssets);
             setHtmlContent(html);
@@ -139,7 +140,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
             return;
           } else {
             throw new Error(
-              "No internet connection and no cached content available"
+              "No internet connection and no cached content available",
             );
           }
         }
@@ -207,7 +208,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
         setIsLoading(false);
       }
     },
-    [retryDelay]
+    [retryDelay],
   );
 
   // Initial load
@@ -225,10 +226,13 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
 
     if (refreshInterval > 0) {
       console.log(`Setting up refresh interval: ${refreshInterval} minutes`);
-      refreshIntervalRef.current = setInterval(() => {
-        console.log("Refreshing content...");
-        loadContent(); // Don't force download on refresh - let comparison decide
-      }, refreshInterval * 60 * 1000);
+      refreshIntervalRef.current = setInterval(
+        () => {
+          console.log("Refreshing content...");
+          loadContent(); // Don't force download on refresh - let comparison decide
+        },
+        refreshInterval * 60 * 1000,
+      );
     }
 
     return () => {
@@ -301,6 +305,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
     <View style={styles.container}>
       {htmlContent && (
         <WebView
+          ref={webViewRef}
           source={{ html: htmlContent }}
           style={styles.webView}
           javaScriptEnabled={true}
@@ -315,8 +320,16 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
           cacheEnabled={false}
           incognito={false}
           thirdPartyCookiesEnabled={true}
-          scalesPageToFit={false}
+          scalesPageToFit={true}
           androidLayerType="hardware"
+          // Additional properties for better web content support
+          userAgent="Mozilla/5.0 (Linux; Android 10; Android TV) AppleWebKit/537.36 SignageApp/2.0"
+          automaticallyAdjustContentInsets={false}
+          bounces={false}
+          scrollEnabled={false}
+          showsHorizontalScrollIndicator={false}
+          showsVerticalScrollIndicator={false}
+          overScrollMode="never"
           onError={(syntheticEvent) => {
             const { nativeEvent } = syntheticEvent;
             console.error("WebView error:", nativeEvent);
@@ -327,6 +340,15 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
           startInLoadingState={false}
           onHttpError={(syntheticEvent) => {
             console.error("HTTP error in WebView:", syntheticEvent.nativeEvent);
+          }}
+          onLoadStart={() => {
+            console.log("WebView started loading");
+          }}
+          onLoadEnd={() => {
+            console.log("WebView finished loading");
+          }}
+          onMessage={(event) => {
+            console.log("WebView message:", event.nativeEvent.data);
           }}
           renderError={(errorName) => {
             console.error("WebView render error:", errorName);
