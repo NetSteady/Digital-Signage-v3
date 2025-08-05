@@ -41,7 +41,7 @@ const checkInternetConnection = async (retries = 3): Promise<boolean> => {
     } catch (error) {
       console.log(
         `Connectivity check attempt ${i + 1}/${retries} failed:`,
-        error,
+        error
       );
 
       if (i === retries - 1) {
@@ -112,12 +112,12 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
         const hasInternet = await checkInternetConnection();
         setIsOffline(!hasInternet);
         console.log(
-          `Internet connection: ${hasInternet ? "Available" : "Not available"}`,
+          `Internet connection: ${hasInternet ? "Available" : "Not available"}`
         );
 
         if (!hasInternet) {
           console.log(
-            "No internet connection - attempting to use cached content",
+            "No internet connection - attempting to use cached content"
           );
 
           // Try to load cached content
@@ -125,7 +125,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
 
           if (cachedAssets.length > 0) {
             console.log(
-              `Using ${cachedAssets.length} cached assets (offline mode)`,
+              `Using ${cachedAssets.length} cached assets (offline mode)`
             );
             const html = createHTMLWithData(cachedAssets);
             setHtmlContent(html);
@@ -140,7 +140,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
             return;
           } else {
             throw new Error(
-              "No internet connection and no cached content available",
+              "No internet connection and no cached content available"
             );
           }
         }
@@ -208,7 +208,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
         setIsLoading(false);
       }
     },
-    [retryDelay],
+    [retryDelay]
   );
 
   // Initial load
@@ -226,13 +226,10 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
 
     if (refreshInterval > 0) {
       console.log(`Setting up refresh interval: ${refreshInterval} minutes`);
-      refreshIntervalRef.current = setInterval(
-        () => {
-          console.log("Refreshing content...");
-          loadContent(); // Don't force download on refresh - let comparison decide
-        },
-        refreshInterval * 60 * 1000,
-      );
+      refreshIntervalRef.current = setInterval(() => {
+        console.log("Refreshing content...");
+        loadContent(); // Don't force download on refresh - let comparison decide
+      }, refreshInterval * 60 * 1000);
     }
 
     return () => {
@@ -312,7 +309,7 @@ const SignageDisplay: React.FC<SignageDisplayProps> = ({
           domStorageEnabled={true}
           mediaPlaybackRequiresUserAction={false}
           allowsInlineMediaPlayback={true}
-          mixedContentMode="compatibility"
+          mixedContentMode="always"
           originWhitelist={["*"]}
           allowFileAccess={true}
           allowFileAccessFromFileURLs={true}

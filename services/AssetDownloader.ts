@@ -37,7 +37,7 @@ export const clearCache = async (): Promise<void> => {
 // Save cache manifest for offline access
 const saveCacheManifest = async (
   assets: LocalAsset[],
-  deviceName: string,
+  deviceName: string
 ): Promise<void> => {
   try {
     const manifest: CacheManifest = {
@@ -49,7 +49,7 @@ const saveCacheManifest = async (
     await FileSystem.writeAsStringAsync(
       CACHE_MANIFEST_FILE,
       JSON.stringify(manifest),
-      { encoding: FileSystem.EncodingType.UTF8 },
+      { encoding: FileSystem.EncodingType.UTF8 }
     );
 
     console.log(`Cache manifest saved with ${assets.length} assets`);
@@ -69,7 +69,7 @@ export const getCachedAssets = async (): Promise<LocalAsset[]> => {
 
     const manifestContent = await FileSystem.readAsStringAsync(
       CACHE_MANIFEST_FILE,
-      { encoding: FileSystem.EncodingType.UTF8 },
+      { encoding: FileSystem.EncodingType.UTF8 }
     );
 
     const manifest: CacheManifest = JSON.parse(manifestContent);
@@ -102,7 +102,7 @@ export const getCachedAssets = async (): Promise<LocalAsset[]> => {
 
 export const downloadAssets = async (
   assets: Asset[],
-  deviceName?: string,
+  deviceName?: string
 ): Promise<LocalAsset[]> => {
   const dirInfo = await FileSystem.getInfoAsync(CACHE_DIR);
   if (!dirInfo.exists) {
@@ -275,7 +275,7 @@ export const createHTMLWithData = (localAssets: LocalAsset[]): string => {
     <div class="content-container">
         <iframe id="content-frame" class="content-item hidden" 
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation allow-top-navigation allow-downloads"
-                allow="autoplay; encrypted-media; fullscreen; geolocation; microphone; camera">
+                allow="autoplay; encrypted-media; fullscreen;" loading="eager">
         </iframe>
         <img id="content-image" class="content-item hidden" alt="Display Image">
         <video id="content-video" class="content-item hidden" autoplay muted playsinline preload="auto"></video>
