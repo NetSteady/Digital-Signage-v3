@@ -25,7 +25,9 @@
                android:theme="@style/AppTheme" 
                android:supportsRtl="true" 
                android:hardwareAccelerated="true" 
-               android:largeHeap="true">
+               android:largeHeap="true"
+               android:usesCleartextTraffic="true"
+               >
     
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
