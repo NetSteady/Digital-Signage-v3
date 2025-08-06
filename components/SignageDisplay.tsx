@@ -76,7 +76,7 @@ const assetsAreEqual = (assets1: Asset[], assets2: Asset[]): boolean => {
 };
 
 const SignageDisplay: React.FC<SignageDisplayProps> = ({
-  refreshInterval = 1,
+  refreshInterval = 0.1,
   retryDelay = 60,
 }) => {
   // Keep screen awake at component level
